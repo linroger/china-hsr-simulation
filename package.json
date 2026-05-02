@@ -1,0 +1,26 @@
+{
+  "name": "china-hsr-simulation",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "prepare:data": "node scripts/prepare-data.cjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test tests/*.test.mjs",
+    "verify": "npm run prepare:data && npm test && npm run build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.1",
+    "lucide-react": "^1.14.0",
+    "mapbox-gl": "^3.23.0",
+    "papaparse": "^5.5.3",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.8.1",
+    "seedrandom": "^3.0.5",
+    "vite": "^8.0.10"
+  },
+  "devDependencies": {}
+}

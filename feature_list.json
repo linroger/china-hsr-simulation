@@ -1,0 +1,63 @@
+[
+  {
+    "id": "feature_data_pipeline_station_route_database",
+    "category": "data",
+    "description": "Build a reproducible database of railway stations, route records, and map layers from the local China railway CSV and HOTOSM GeoJSON datasets.",
+    "steps": [
+      "Run ./init.sh from the ChinaHSR_Simulation folder",
+      "Verify station-data.json contains thousands of stations with WGS84 coordinates",
+      "Verify route-data.json contains simulated HSR routes seeded by real train origin-destination records",
+      "Verify hsr-stations.geojson and hsr-rails.geojson are present for the Mapbox layers"
+    ],
+    "passes": true
+  },
+  {
+    "id": "feature_interval_aware_booking_and_seat_reuse",
+    "category": "functional",
+    "description": "Book real seats by station interval so a seat becomes available to another passenger after the previous passenger gets off.",
+    "steps": [
+      "Quote a train trip between two stations",
+      "Confirm a booking and receive a ticket ID, seat ID, car, row, seat letter, and price",
+      "Verify overlapping bookings cannot use the same seat interval",
+      "Verify a later passenger can reuse the same seat after the first passenger alights"
+    ],
+    "passes": true
+  },
+  {
+    "id": "feature_dynamic_ticket_pricing",
+    "category": "algorithm",
+    "description": "Calculate realistic ticket prices from distance, seat class, segment occupancy, booking horizon, peak demand, and service frequency.",
+    "steps": [
+      "Quote the same route in second, first, and business class",
+      "Verify higher seat classes cost more than lower classes",
+      "Increase occupancy on a segment",
+      "Verify the high-demand quote is higher than the low-demand quote"
+    ],
+    "passes": true
+  },
+  {
+    "id": "feature_interactive_dashboard_and_mapbox_map",
+    "category": "ui",
+    "description": "Provide an interactive dashboard and Mapbox map showing stations, rails, moving trains, occupancy, pricing, bookings, and events.",
+    "steps": [
+      "Start the Vite app",
+      "Verify the map renders railway and station layers",
+      "Verify live train markers update as simulation time advances",
+      "Use the booking panel to create a ticket",
+      "Verify dashboard statistics and event log update"
+    ],
+    "passes": true
+  },
+  {
+    "id": "feature_quality_gates_and_secret_safety",
+    "category": "quality",
+    "description": "Keep the project reproducible, testable, and safe by running data prep, tests, production build, and secret scanning.",
+    "steps": [
+      "Run npm test",
+      "Run npm run build",
+      "Run rg \"sk\\\\.ey\" . and verify no Mapbox secret token is stored",
+      "Update handoff.md and agent-progress.txt with evidence"
+    ],
+    "passes": true
+  }
+]

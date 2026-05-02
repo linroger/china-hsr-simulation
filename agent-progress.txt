@@ -1,0 +1,24 @@
+China HSR Simulation Progress Log
+=================================
+
+Project overview:
+This project implements a realistic China high-speed rail simulation using local station, train-route, and HOTOSM railway data. The most important behavior is segment-aware booking: seats are occupied only over the station interval a passenger travels and become available for later non-overlapping passengers after alighting.
+
+Session log:
+
+2026-05-02T10:41:20Z | branch: root git history unavailable
+Feature/bug worked on: Project initialization and simulation design.
+Files touched: handoff.md, feature_list.json, agent-progress.txt, README.md, package.json, vite.config.js, .env.example.
+Tests run: Initial inventory only; implementation tests pending.
+Result: In progress. The root repository reports `fatal: bad object HEAD`, so this folder carries its own explicit harness and verification script.
+
+2026-05-02T11:06:24Z | branch: main
+Feature/bug worked on: Complete first implementation slice for all current feature list entries.
+Files touched: scripts/prepare-data.cjs, src/algorithms/*, src/simulation_core/*, src/visualization/*, src/styles/app.css, tests/*, README.md, feature_list.json, handoff.md, package-lock.json, public generated data artifacts.
+Tests run: `npm run prepare:data` (3058 stations, 7278 HSR records, 280 simulation routes, 2200 rail features); `npm test` (3/3 passing); `npm run build` (passing with Mapbox bundle-size warning only); `rg "sk\\.ey" .` (no matches); `./init.sh` (complete); `curl -I http://127.0.0.1:5174/` (HTTP 200).
+Result: Passing. The app is running locally at `http://127.0.0.1:5174/`. The browser default uses only the public Mapbox token; no secret token is stored.
+
+Next steps:
+1. Improve realism by adding an authoritative full timetable source if available.
+2. Add a dedicated algorithm comparison page for exact small-instance optimization versus the production heuristic.
+3. Add scenario export/replay so runs can be reproduced from a saved seed and demand profile.

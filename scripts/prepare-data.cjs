@@ -1,0 +1,264 @@
+#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = path.resolve(__dirname, '..');
+const SOURCE_ROOT = path.resolve(ROOT, '..');
+const PUBLIC = path.join(ROOT, 'public');
+const STATION_CSV = path.join(SOURCE_ROOT, 'China-rail-way-stations-data-main/src/station.csv');
+const LINE_CSV = path.join(SOURCE_ROOT, 'China-rail-way-stations-data-main/src/line.csv');
+const OSM_POINTS = path.join(SOURCE_ROOT, 'hotosm_chn_railways_points_geojson/hotosm_chn_railways_points_geojson.geojson');
+const OSM_LINES = path.join(SOURCE_ROOT, 'hotosm_chn_railways_lines_geojson/hotosm_chn_railways_lines_geojson.geojson');
+
+fs.mkdirSync(PUBLIC, { recursive: true });
+
+const stations = parseCsv(fs.readFileSync(STATION_CSV, 'utf8'))
+  .map((row, index) => ({
+    id: `st-${index}`,
+    name: clean(row['站名']),
+    address: clean(row['车站地址']),
+    bureau: clean(row['铁路局']),
+    kind: clean(row['性质']),
+    province: clean(row['省']),
+    city: clean(row['市']),
+    lng: Number(row.WGS84_Lng),
+    lat: Number(row.WGS84_Lat),
+    sourceCount: Number(row.srcCount || 0),
+  }))
+  .filter((station) => station.name && Number.isFinite(station.lng) && Number.isFinite(station.lat))
+  .map((station) => ({ ...station, tier: stationTier(station) }));
+
+const stationByName = new Map(stations.map((station) => [station.name, station]));
+
+const allRouteRecords = parseCsv(fs.readFileSync(LINE_CSV, 'utf8'))
+  .filter((row) => ['G', 'D', 'C'].includes(clean(row.type)))
+  .map((row, index) => ({
+    id: `svc-${index}`,
+    code: clean(row.code) ? `${clean(row.type)}${clean(row.code)}` : clean(row.station_train_code).split('(')[0],
+    trainNo: clean(row.train_no),
+    type: clean(row.type),
+    origin: clean(row.src),
+    destination: clean(row.dst),
+    originKnown: stationByName.has(clean(row.src)),
+    destinationKnown: stationByName.has(clean(row.dst)),
+  }))
+  .filter((record) => record.origin && record.destination);
+
+const knownRoutes = allRouteRecords.filter((record) => record.originKnown && record.destinationKnown);
+const serviceFrequency = new Map();
+for (const record of knownRoutes) {
+  const key = [record.origin, record.destination].sort().join('|');
+  serviceFrequency.set(key, (serviceFrequency.get(key) || 0) + 1);
+}
+const maxFrequency = Math.max(...serviceFrequency.values());
+
+const simulationRoutes = knownRoutes
+  .filter((record) => distance(stationByName.get(record.origin), stationByName.get(record.destination)) > 120)
+  .slice(0, 280)
+  .map((record, index) => buildRoute(record, index));
+
+const stationsGeojson = {
+  type: 'FeatureCollection',
+  features: stations.map((station) => ({
+    type: 'Feature',
+    properties: {
+      id: station.id,
+      name: station.name,
+      province: station.province,
+      city: station.city,
+      tier: station.tier,
+      sourceCount: station.sourceCount,
+    },
+    geometry: { type: 'Point', coordinates: [station.lng, station.lat] },
+  })),
+};
+
+const railGeojson = buildRailGeojson();
+
+writeJson('station-data.json', {
+  generatedAt: new Date().toISOString(),
+  source: 'China railway station CSV with WGS84 coordinates',
+  count: stations.length,
+  stations,
+});
+writeJson('route-data.json', {
+  generatedAt: new Date().toISOString(),
+  source: 'China railway train OD CSV; intermediate stops are simulation-derived from station geography',
+  routeRecordCount: allRouteRecords.length,
+  knownEndpointRecordCount: knownRoutes.length,
+  simulationRouteCount: simulationRoutes.length,
+  routes: simulationRoutes,
+  routeRecords: allRouteRecords,
+});
+writeJson('hsr-stations.geojson', stationsGeojson);
+writeJson('hsr-rails.geojson', railGeojson);
+
+console.log(`[prepare:data] stations: ${stations.length}`);
+console.log(`[prepare:data] HSR service records: ${allRouteRecords.length}`);
+console.log(`[prepare:data] known endpoint records: ${knownRoutes.length}`);
+console.log(`[prepare:data] simulation routes: ${simulationRoutes.length}`);
+console.log(`[prepare:data] rail line features: ${railGeojson.features.length}`);
+
+function buildRoute(record, index) {
+  const origin = stationByName.get(record.origin);
+  const destination = stationByName.get(record.destination);
+  const totalKm = distance(origin, destination) * 1.12;
+  const stopTarget = Math.max(3, Math.min(12, Math.round(totalKm / 145) + 2));
+  const intermediate = stations
+    .filter((station) => station.name !== origin.name && station.name !== destination.name)
+    .map((station) => ({ station, projection: project(origin, destination, station), detour: detourKm(origin, destination, station) }))
+    .filter((item) => item.projection > 0.06 && item.projection < 0.94 && item.detour < Math.max(55, totalKm * 0.18))
+    .sort((a, b) => a.detour - b.detour)
+    .slice(0, stopTarget - 2)
+    .sort((a, b) => a.projection - b.projection)
+    .map((item) => item.station);
+  const stops = [origin, ...intermediate, destination].map((station, stopIndex) => ({
+    id: station.id,
+    name: station.name,
+    province: station.province,
+    city: station.city,
+    lng: station.lng,
+    lat: station.lat,
+    tier: station.tier,
+    simulatedStop: stopIndex !== 0 && stopIndex !== intermediate.length + 1,
+    dwellMinutes: station.tier === 'national-hub' ? 6 : station.tier === 'regional-hub' ? 4 : 2,
+  }));
+  const segments = [];
+  for (let i = 0; i < stops.length - 1; i += 1) {
+    const segmentDistance = distance(stops[i], stops[i + 1]) * 1.08;
+    segments.push({
+      from: stops[i].name,
+      to: stops[i + 1].name,
+      distanceKm: Math.round(segmentDistance),
+      speedLimitKmh: segmentDistance > 180 ? 350 : segmentDistance > 80 ? 300 : 250,
+      track: 'double',
+      signaling: 'CTCS-3 simulated',
+    });
+  }
+  const key = [record.origin, record.destination].sort().join('|');
+  return {
+    id: `route-${index}-${record.code}`,
+    code: record.code,
+    trainNo: record.trainNo,
+    type: record.type,
+    origin: record.origin,
+    destination: record.destination,
+    totalDistanceKm: segments.reduce((sum, segment) => sum + segment.distanceKm, 0),
+    frequencyRank: (serviceFrequency.get(key) || 1) / maxFrequency,
+    provenance: 'Real train origin/destination; intermediate stops simulation-derived from station geography.',
+    stops,
+    segments,
+  };
+}
+
+function buildRailGeojson() {
+  if (!fs.existsSync(OSM_LINES)) return { type: 'FeatureCollection', features: [] };
+  const raw = JSON.parse(fs.readFileSync(OSM_LINES, 'utf8'));
+  const features = [];
+  let coordinateBudget = 0;
+  for (const feature of raw.features || []) {
+    if (features.length >= 2200 || coordinateBudget > 320000) break;
+    const props = feature.properties || {};
+    if (props.railway !== 'rail') continue;
+    if (!feature.geometry || feature.geometry.type !== 'LineString') continue;
+    const coordinates = feature.geometry.coordinates;
+    if (!Array.isArray(coordinates) || coordinates.length < 2) continue;
+    const stride = Math.max(1, Math.ceil(coordinates.length / 80));
+    const simplified = coordinates.filter((_, index) => index % stride === 0);
+    const last = coordinates[coordinates.length - 1];
+    if (simplified[simplified.length - 1] !== last) simplified.push(last);
+    coordinateBudget += simplified.length;
+    features.push({
+      type: 'Feature',
+      properties: {
+        osm_id: props.osm_id,
+        name: props.name || props['name:zh'] || '',
+        gauge: props.gauge || '',
+        electrified: props.electrified || '',
+      },
+      geometry: { type: 'LineString', coordinates: simplified },
+    });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function parseCsv(text) {
+  const rows = [];
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
+  const headers = splitCsvLine(lines[0]);
+  for (const line of lines.slice(1)) {
+    const cells = splitCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = cells[index] ?? '';
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function splitCsvLine(line) {
+  const cells = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"' && line[i + 1] === '"') {
+      current += '"';
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      cells.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current);
+  return cells;
+}
+
+function clean(value) {
+  return String(value || '').trim();
+}
+
+function stationTier(station) {
+  const name = station.name;
+  if (/北京|上海|广州|深圳|成都|重庆|武汉|郑州|西安|南京|杭州|长沙|天津/.test(name)) return 'national-hub';
+  if ((station.sourceCount || 0) >= 4 || /南|西|东|北/.test(name)) return 'regional-hub';
+  return 'local';
+}
+
+function distance(a, b) {
+  const lat1 = radians(a.lat);
+  const lat2 = radians(b.lat);
+  const dLat = radians(b.lat - a.lat);
+  const dLng = radians(b.lng - a.lng);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function project(a, b, p) {
+  const ax = a.lng;
+  const ay = a.lat;
+  const bx = b.lng;
+  const by = b.lat;
+  const px = p.lng;
+  const py = p.lat;
+  const dx = bx - ax;
+  const dy = by - ay;
+  return ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1);
+}
+
+function detourKm(a, b, p) {
+  return distance(a, p) + distance(p, b) - distance(a, b);
+}
+
+function radians(value) {
+  return value * Math.PI / 180;
+}
+
+function writeJson(file, data) {
+  fs.writeFileSync(path.join(PUBLIC, file), `${JSON.stringify(data)}\n`);
+}
