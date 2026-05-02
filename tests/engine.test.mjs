@@ -80,3 +80,22 @@ test('no-show passengers release their seat inventory after departure', () => {
   assert.equal(train.inventory.isSeatAvailable(seatId, 0, 2), true);
   assert.equal(engine.stats.noShows >= 1, true);
 });
+
+test('live demand changes revenue and passenger totals during ticks', () => {
+  const routes = Array.from({ length: 8 }, (_, index) => ({
+    ...route,
+    id: `live-${index}`,
+    code: `G${800 + index}`,
+    corridor: 'East China / North China',
+    originProvince: '北京',
+    destinationProvince: '上海',
+    frequencyRank: 0.9,
+  }));
+  const engine = new SimulationEngine({ routes, seed: 4, maxTrains: 12 });
+  const before = engine.snapshot().stats;
+  for (let i = 0; i < 16; i += 1) engine.tick(1);
+  const after = engine.snapshot().stats;
+
+  assert.ok(after.totalRevenue > before.totalRevenue, `expected revenue to increase from ${before.totalRevenue}, saw ${after.totalRevenue}`);
+  assert.ok(after.totalPassengers > before.totalPassengers, `expected passengers to increase from ${before.totalPassengers}, saw ${after.totalPassengers}`);
+});

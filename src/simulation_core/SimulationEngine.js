@@ -1,10 +1,11 @@
 import { SeatInventory, CLASS_ORDER } from '../algorithms/seatInventory.js';
 import { priceQuote, reconcileDemandForecast } from '../algorithms/pricing.js';
-import { haversineKm, interpolateCoord } from './geo.js';
+import { haversineKm, interpolateCoord, interpolateLine } from './geo.js';
 
 const DEFAULT_SPEED_KMH = 285;
 const DEFAULT_MAX_TRAINS = 1500;
 const SNAPSHOT_TRAIN_LIMIT = 700;
+const TRAIN_SEAT_QUOTA = 554;
 
 export class SimulationEngine {
   constructor({ stations = [], routes = [], seed = 20260502, maxTrains = DEFAULT_MAX_TRAINS } = {}) {
@@ -19,7 +20,19 @@ export class SimulationEngine {
     this.running = false;
     this.speed = 10;
     this.callbacks = { onUpdate: null };
-    this.stats = { totalRevenue: 0, totalBookings: 0, rejectedBookings: 0, totalPassengers: 0, noShows: 0, stationStops: 0, trainCount: this.trains.length };
+    this.stats = {
+      totalRevenue: 0,
+      totalBookings: 0,
+      rejectedBookings: 0,
+      totalPassengers: 0,
+      noShows: 0,
+      stationStops: 0,
+      trainCount: this.trains.length,
+      routeCount: this.routes.length,
+      seatQuotaPerTrain: TRAIN_SEAT_QUOTA,
+      trainsPerRoute: this.routes.length ? Math.round((this.trains.length / this.routes.length) * 100) / 100 : 0,
+    };
+    this.tickCounter = 0;
     this.preloadDemand();
     this.tick(0);
   }
@@ -75,17 +88,20 @@ export class SimulationEngine {
   preloadDemand() {
     for (const train of this.trains) {
       const demandIntensity = train.frequencyRank > 0.5 ? 1.2 : train.corridor?.includes('North China') || train.corridor?.includes('East China') ? 1.05 : 0.82;
-      const attempts = Math.max(4, Math.round((6 + (Math.abs(hashCode(train.id)) % 18)) * demandIntensity));
+      const targetLoad = 0.42 + demandIntensity * 0.2 + this.random(train.id, 'load') * 0.18;
+      const attempts = Math.max(28, Math.round(TRAIN_SEAT_QUOTA * Math.min(0.86, targetLoad) / 2.15));
       for (let i = 0; i < attempts; i += 1) {
         const originIndex = Math.floor(this.random(train.id, i) * Math.max(1, train.stops.length - 2));
         const maxDest = train.stops.length - 1;
         const destinationIndex = Math.min(maxDest, originIndex + 1 + Math.floor(this.random(train.id, i, 'd') * Math.min(5, maxDest - originIndex)));
         const seatClass = weightedClass(this.random(train.id, i, 'c'));
+        const groupSize = groupSizeFromRandom(this.random(train.id, i, 'g'));
         this.bookTrip({
           trainId: train.id,
           originIndex,
           destinationIndex,
           seatClass,
+          groupSize,
           passengerName: `Sim Pax ${i + 1}`,
           silent: true,
         });
@@ -118,6 +134,36 @@ export class SimulationEngine {
   tick(realSeconds = 1) {
     this.nowMinutes += realSeconds * this.speed / 60;
     for (const train of this.trains) this.updateTrain(train);
+    this.tickCounter += 1;
+    if (realSeconds > 0 && this.tickCounter % 8 === 0) this.sellRealtimeDemand(10);
+  }
+
+  sellRealtimeDemand(requestCount = 6) {
+    let sold = 0;
+    const bookable = this.trains.filter((train) => !train.completed && train.departureMinute > this.nowMinutes - 20);
+    if (!bookable.length) return sold;
+    for (let i = 0; i < requestCount; i += 1) {
+      const train = weightedTrainChoice(bookable, this.random('live', this.tickCounter, i));
+      const maxOrigin = Math.max(1, train.stops.length - 2);
+      const originIndex = Math.min(maxOrigin, Math.floor(this.random(train.id, this.tickCounter, i, 'o') * maxOrigin));
+      const maxDest = train.stops.length - 1;
+      const tripSpan = 1 + Math.floor(this.random(train.id, this.tickCounter, i, 'd') * Math.min(6, maxDest - originIndex));
+      const destinationIndex = Math.min(maxDest, originIndex + tripSpan);
+      const seatClass = weightedClass(this.random(train.id, this.tickCounter, i, 'c'));
+      const groupSize = groupSizeFromRandom(this.random(train.id, this.tickCounter, i, 'g'));
+      const response = this.bookTrip({
+        trainId: train.id,
+        originIndex,
+        destinationIndex,
+        seatClass,
+        groupSize,
+        passengerName: `Live Demand ${this.tickCounter}-${i}`,
+        silent: true,
+      });
+      if (response.ok) sold += groupSize;
+    }
+    if (sold) this.logEvent('demand', `Live demand sold ${sold} seats across ${requestCount} booking requests.`);
+    return sold;
   }
 
   updateTrain(train) {
@@ -304,6 +350,8 @@ export class SimulationEngine {
         visibleTrainCount: visibleTrains.length,
         averageDelayMinutes: average(serialized.map((train) => train.delayMinutes || 0)),
         delayedTrains: serialized.filter((train) => (train.delayMinutes || 0) >= 5).length,
+        activeAverageDelayMinutes: average(serialized.filter((train) => train.status === 'running').map((train) => train.currentDelayMinutes || 0)),
+        activeDelayedTrains: serialized.filter((train) => train.status === 'running' && (train.currentDelayMinutes || 0) >= 3).length,
       },
       bookings: this.bookings.slice(-12).reverse(),
       events: this.events,
@@ -320,6 +368,7 @@ export class SimulationEngine {
         stops: train.stops.map((stop, index) => ({ ...stop, index })),
         departureMinute: train.departureMinute,
         totalDistanceKm: train.totalDistanceKm,
+        seatQuota: TRAIN_SEAT_QUOTA,
       })),
       network: networkSummary(serialized),
     };
@@ -404,9 +453,11 @@ function increment(map, key, train) {
 function serializeTrain(train, nowMinutes) {
   const from = train.stops[train.currentSegmentIndex] || train.stops[0];
   const to = train.stops[train.currentSegmentIndex + 1] || from;
-  const coords = interpolateCoord(from, to, train.segmentProgress || 0);
+  const segment = train.segments[train.currentSegmentIndex];
+  const coords = interpolateLine(segment?.geometry, train.segmentProgress || 0) || interpolateCoord(from, to, train.segmentProgress || 0);
   const activeLoad = train.inventory.occupancyForSegment(train.currentSegmentIndex);
   const classLoads = Object.fromEntries(CLASS_ORDER.map((seatClass) => [seatClass, train.inventory.occupancyForSegment(train.currentSegmentIndex, seatClass)]));
+  const currentDelayMinutes = currentDelay(train);
   return {
     id: train.id,
     code: train.code,
@@ -431,6 +482,7 @@ function serializeTrain(train, nowMinutes) {
     totalDistanceKm: train.totalDistanceKm,
     departureMinute: train.departureMinute,
     delayMinutes: train.delayMinutes,
+    currentDelayMinutes,
     minutesToDeparture: Math.round(train.departureMinute - nowMinutes),
   };
 }
@@ -448,10 +500,46 @@ function distanceBetween(train, originIndex, destinationIndex) {
   return total;
 }
 
+function currentDelay(train) {
+  if (train.status === 'scheduled') return 0;
+  if (train.status === 'completed') return train.delayMinutes || 0;
+  let planned = 0;
+  let actual = 0;
+  for (let i = 0; i < train.currentSegmentIndex; i += 1) {
+    planned += train.plannedSegmentMinutes[i] || 0;
+    actual += train.segmentMinutes[i] || 0;
+  }
+  planned += (train.plannedSegmentMinutes[train.currentSegmentIndex] || 0) * (train.segmentProgress || 0);
+  actual += (train.segmentMinutes[train.currentSegmentIndex] || 0) * (train.segmentProgress || 0);
+  return Math.max(0, Math.round((actual - planned) * 10) / 10);
+}
+
 function weightedClass(value) {
   if (value < 0.04) return 'business';
   if (value < 0.22) return 'firstClass';
   return 'secondClass';
+}
+
+function groupSizeFromRandom(value) {
+  if (value < 0.66) return 1;
+  if (value < 0.87) return 2;
+  if (value < 0.96) return 3;
+  return 4;
+}
+
+function weightedTrainChoice(trains, value) {
+  const weights = trains.map((train) => {
+    const load = train.inventory.occupancyForSegment(train.currentSegmentIndex || 0).loadFactor;
+    const departurePressure = train.departureMinute > 0 ? Math.max(0.2, Math.min(1.5, 1.1 - Math.abs(train.departureMinute - 540) / 900)) : 1;
+    return Math.max(0.1, (train.frequencyRank || 0.3) + 0.2) * departurePressure * Math.max(0.15, 1 - load);
+  });
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  let target = value * total;
+  for (let i = 0; i < trains.length; i += 1) {
+    target -= weights[i];
+    if (target <= 0) return trains[i];
+  }
+  return trains[trains.length - 1];
 }
 
 function hashCode(value) {

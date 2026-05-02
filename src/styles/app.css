@@ -189,6 +189,12 @@ input {
 
 .map-legend .hub {
   background: #f59e0b;
+  transform: rotate(45deg);
+}
+
+.map-legend .regional {
+  background: #06b6d4;
+  border-radius: 2px;
 }
 
 .map-legend .train-low {

@@ -58,6 +58,8 @@ Dynamic pricing combines route distance, seat class, segment scarcity, booking h
 - `src/algorithms/seatInventory.js` implements the interval calendar, seat preferences, group seating, accessibility constraints, and seat release/cancellation.
 - `src/algorithms/pricing.js` implements distance fares, class multipliers, bid-price scarcity, peak/time-to-departure effects, no-show buffer, and elasticity metadata.
 - `src/simulation_core/SimulationEngine.js` drives the discrete-event train clock, train positions, station events, quotes, bookings, cancellations, and dashboard snapshots.
+- `src/simulation_core/simulationWorker.js` runs the simulation engine in a browser Web Worker so train updates, live demand, pricing, booking, and snapshots execute off the React/Mapbox UI thread.
+- `src/simulation_core/SimulationWorkerClient.js` is the main-thread message bridge for worker snapshots, booking, quotes, and speed controls.
 - `src/visualization/` contains the Mapbox map, operations dashboard, and booking workflow.
 - `tests/` contains deterministic regression checks for interval seat reuse, pricing behavior, and engine booking state mutation.
 

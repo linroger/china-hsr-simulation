@@ -13,8 +13,11 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
         <Metric icon={<Users />} label="Passengers booked" value={snapshot.stats.totalPassengers.toLocaleString()} />
         <Metric icon={<TrainFront />} label="Active / total trains" value={`${snapshot.stats.activeTrains || 0}/${snapshot.stats.trainCount || trains.length}`} />
         <Metric icon={<Timer />} label="Visible on map" value={snapshot.stats.visibleTrainCount || trains.length} />
-        <Metric icon={<Timer />} label="Avg delay" value={`${snapshot.stats.averageDelayMinutes || 0} min`} />
+        <Metric icon={<Timer />} label="Active avg delay" value={`${snapshot.stats.activeAverageDelayMinutes || 0} min`} />
         <Metric icon={<Users />} label="No-show releases" value={snapshot.stats.noShows || 0} />
+        <Metric icon={<TrainFront />} label="Simulation thread" value={snapshot.worker?.thread || 'main'} />
+        <Metric icon={<Users />} label="Seat quota / train" value={snapshot.stats.seatQuotaPerTrain || 554} />
+        <Metric icon={<TrainFront />} label="Trains / route" value={snapshot.stats.trainsPerRoute || '—'} />
       </section>
 
       <section className="control-strip">
@@ -68,7 +71,7 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
           <h2>Operational Realism</h2>
           <div className="realism-grid">
             <Realism label="Station stops processed" value={snapshot.stats.stationStops || 0} />
-            <Realism label="Delayed trains >= 5 min" value={snapshot.stats.delayedTrains || 0} />
+            <Realism label="Active delayed trains >= 3 min" value={snapshot.stats.activeDelayedTrains || 0} />
             <Realism label="No-show seats released" value={snapshot.stats.noShows || 0} />
             <Realism label="Map render cap" value={snapshot.stats.visibleTrainCount || trains.length} />
           </div>

@@ -30,6 +30,12 @@ Files touched: package.json, README.md, scripts/serve-static.cjs, src/simulation
 Tests run: `npm test` (6/6 passing); `npm run build` (passing with Mapbox bundle-size warning only); `./init.sh` (complete); `curl -I http://127.0.0.1:5174/` (HTTP 200); `launchctl print gui/$(id -u)/com.codex.china-hsr-simulation` (state running, PID 22517); full-engine scale probe (1500 trains, 181 active, 400 visible, 67 no-show releases, 7.8 min average delay, 1124 delayed trains, 16 station hotspots).
 Result: Passing. The site is reachable at the in-app browser URL through a launchctl-managed static server, and the simulation now models no-show releases, delay pressure, and station platform congestion.
 
+2026-05-02T17:57:01Z | branch: main
+Feature/bug worked on: Implement browser multithreading and continue realism/map refinements.
+Files touched: src/simulation_core/simulationWorker.js, src/simulation_core/SimulationWorkerClient.js, src/App.jsx, src/visualization/BookingPanel.jsx, src/visualization/Dashboard.jsx, src/visualization/HSRMap.jsx, src/simulation_core/SimulationEngine.js, src/simulation_core/geo.js, src/styles/app.css, scripts/prepare-data.cjs, tests/dataDiversity.test.mjs, tests/engine.test.mjs, README.md, handoff.md, agent-progress.txt, public generated data artifacts.
+Tests run: `npm run prepare:data` (3058 stations, 7278 HSR records, 1200 routes, 85 origins, 27 corridors, 8000 rail features); `npm test` (7/7 passing); `npm run build` (passing, emits `simulationWorker-*.js`); `./init.sh` (complete); `curl -I http://127.0.0.1:5174/` (HTTP 200); full-engine probe (1500 trains, 1200 routes, 1.25 trains/route, 554 seats/train, revenue and passengers increased after 16 ticks, 52.7% rail-matched segments).
+Result: Passing. The simulation engine now runs in a browser Web Worker, live demand changes revenue and passengers over time, train movement uses HOTOSM rail-corridor polylines where matched, train markers are smaller, station markers are dots/squares/diamonds, and the dashboard shows quota and trains-per-route.
+
 Next steps:
 1. Improve realism by adding an authoritative full timetable source if available.
 2. Add a dedicated algorithm comparison page for exact small-instance optimization versus the production heuristic.

@@ -28,4 +28,4 @@ if rg "sk\\.ey" . >/tmp/china_hsr_secret_scan.txt; then
   exit 1
 fi
 
-echo "[init] complete. Start the app with: npm run dev"
+echo "[init] complete. Start the stable local app server with: npm run serve"

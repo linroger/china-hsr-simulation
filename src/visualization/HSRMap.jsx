@@ -39,15 +39,48 @@ export default function HSRMap({ trains, events }) {
       });
       map.addSource('stations', { type: 'geojson', data: '/hsr-stations.geojson' });
       map.addLayer({
-        id: 'stations',
+        id: 'local-station-dots',
         type: 'circle',
         source: 'stations',
+        filter: ['==', ['get', 'tier'], 'local'],
         paint: {
-          'circle-radius': ['case', ['==', ['get', 'tier'], 'national-hub'], 4.8, ['==', ['get', 'tier'], 'regional-hub'], 3.1, 1.8],
-          'circle-color': ['case', ['==', ['get', 'tier'], 'national-hub'], '#f59e0b', ['==', ['get', 'tier'], 'regional-hub'], '#22c55e', '#93c5fd'],
-          'circle-opacity': 0.78,
-          'circle-stroke-color': '#06111f',
-          'circle-stroke-width': 0.7,
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 0.8, 7, 1.7, 11, 3],
+          'circle-color': '#64748b',
+          'circle-opacity': 0.48,
+          'circle-stroke-color': '#e2e8f0',
+          'circle-stroke-width': 0.25,
+        },
+      });
+      map.addLayer({
+        id: 'regional-station-squares',
+        type: 'symbol',
+        source: 'stations',
+        filter: ['==', ['get', 'tier'], 'regional-hub'],
+        layout: {
+          'text-field': '▪',
+          'text-size': ['interpolate', ['linear'], ['zoom'], 3, 8, 7, 12, 11, 17],
+          'text-allow-overlap': true,
+        },
+        paint: {
+          'text-color': '#06b6d4',
+          'text-halo-color': '#082f49',
+          'text-halo-width': 0.8,
+        },
+      });
+      map.addLayer({
+        id: 'national-station-diamonds',
+        type: 'symbol',
+        source: 'stations',
+        filter: ['==', ['get', 'tier'], 'national-hub'],
+        layout: {
+          'text-field': '◆',
+          'text-size': ['interpolate', ['linear'], ['zoom'], 3, 9, 7, 14, 11, 20],
+          'text-allow-overlap': true,
+        },
+        paint: {
+          'text-color': '#f59e0b',
+          'text-halo-color': '#451a03',
+          'text-halo-width': 1,
         },
       });
       map.addSource('trains', { type: 'geojson', data: trainGeojson(trains) });
@@ -56,9 +89,9 @@ export default function HSRMap({ trains, events }) {
         type: 'circle',
         source: 'trains',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'load'], 0, 7, 1, 15],
+          'circle-radius': ['interpolate', ['linear'], ['get', 'load'], 0, 3.5, 1, 8],
           'circle-color': ['interpolate', ['linear'], ['get', 'load'], 0, '#10b981', 0.72, '#f59e0b', 0.95, '#ef4444'],
-          'circle-stroke-width': 2.5,
+          'circle-stroke-width': 1.4,
           'circle-stroke-color': '#ffffff',
         },
       });
@@ -66,10 +99,10 @@ export default function HSRMap({ trains, events }) {
         id: 'train-labels',
         type: 'symbol',
         source: 'trains',
-        minzoom: 5,
+        minzoom: 7.2,
         layout: {
           'text-field': ['get', 'code'],
-          'text-size': 11,
+          'text-size': 10,
           'text-offset': [0, 1.7],
           'text-anchor': 'top',
         },
@@ -107,7 +140,8 @@ export default function HSRMap({ trains, events }) {
       <div className="map-legend">
         <b>Live algorithm map</b>
         <span><i className="rail" /> OSM rail layer</span>
-        <span><i className="hub" /> National hubs</span>
+        <span><i className="hub" /> National hub diamonds</span>
+        <span><i className="regional" /> Regional hub squares</span>
         <span><i className="train-low" /> Low-load train</span>
         <span><i className="train-high" /> High-load train</span>
       </div>

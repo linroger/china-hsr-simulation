@@ -52,6 +52,8 @@ for (const record of knownRoutes) {
   serviceFrequency.set(key, (serviceFrequency.get(key) || 0) + 1);
 }
 const maxFrequency = Math.max(...serviceFrequency.values());
+const railGeojson = buildRailGeojson();
+const railIndex = createRailIndex(railGeojson);
 
 const simulationCandidates = knownRoutes
   .filter((record) => distance(stationByName.get(record.origin), stationByName.get(record.destination)) > 80)
@@ -85,8 +87,6 @@ const stationsGeojson = {
     geometry: { type: 'Point', coordinates: [station.lng, station.lat] },
   })),
 };
-
-const railGeojson = buildRailGeojson();
 
 writeJson('station-data.json', {
   generatedAt: new Date().toISOString(),
@@ -142,6 +142,7 @@ function buildRoute(record, index) {
   const segments = [];
   for (let i = 0; i < stops.length - 1; i += 1) {
     const segmentDistance = distance(stops[i], stops[i + 1]) * 1.08;
+    const geometry = railGeometryBetween(stops[i], stops[i + 1], railIndex);
     segments.push({
       from: stops[i].name,
       to: stops[i + 1].name,
@@ -149,6 +150,8 @@ function buildRoute(record, index) {
       speedLimitKmh: segmentDistance > 180 ? 350 : segmentDistance > 80 ? 300 : 250,
       track: 'double',
       signaling: 'CTCS-3 simulated',
+      geometry: geometry.coordinates,
+      geometrySource: geometry.source,
     });
   }
   const key = [record.origin, record.destination].sort().join('|');
@@ -167,6 +170,7 @@ function buildRoute(record, index) {
     provenance: 'Real train origin/destination; intermediate stops simulation-derived from station geography.',
     stops,
     segments,
+    geometry: mergeSegmentGeometries(segments),
   };
 }
 
@@ -261,7 +265,7 @@ function buildRailGeojson() {
   const features = [];
   let coordinateBudget = 0;
   for (const feature of raw.features || []) {
-    if (features.length >= 2200 || coordinateBudget > 320000) break;
+    if (features.length >= 8000 || coordinateBudget > 820000) break;
     const props = feature.properties || {};
     if (props.railway !== 'rail') continue;
     if (!feature.geometry || feature.geometry.type !== 'LineString') continue;
@@ -284,6 +288,108 @@ function buildRailGeojson() {
     });
   }
   return { type: 'FeatureCollection', features };
+}
+
+function createRailIndex(railGeojson) {
+  const cellSize = 0.35;
+  const cells = new Map();
+  for (const feature of railGeojson.features || []) {
+    const coordinates = feature.geometry?.coordinates || [];
+    coordinates.forEach((coord, index) => {
+      const point = { lng: coord[0], lat: coord[1], index };
+      const key = gridKey(point.lng, point.lat, cellSize);
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(point);
+    });
+  }
+  return { cells, cellSize };
+}
+
+function railGeometryBetween(from, to, railIndex) {
+  const directKm = distance(from, to);
+  const margin = Math.min(3.8, Math.max(0.55, directKm / 210));
+  const minLng = Math.min(from.lng, to.lng) - margin;
+  const maxLng = Math.max(from.lng, to.lng) + margin;
+  const minLat = Math.min(from.lat, to.lat) - margin;
+  const maxLat = Math.max(from.lat, to.lat) + margin;
+  const candidates = queryRailPoints(railIndex, minLng, minLat, maxLng, maxLat)
+    .map((point) => {
+      const projection = project(from, to, point);
+      const perpendicularKm = perpendicularDistanceKm(from, to, point);
+      return { ...point, projection, perpendicularKm };
+    })
+    .filter((point) => point.projection > -0.12 && point.projection < 1.12)
+    .filter((point) => point.perpendicularKm < Math.max(45, Math.min(220, directKm * 0.55)))
+    .sort((a, b) => a.projection - b.projection);
+
+  const sampled = sampleRailCandidates(candidates, directKm);
+  if (sampled.length < 3) {
+    return {
+      source: 'station-straight-fallback',
+      coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
+    };
+  }
+  return {
+    source: 'hotosm-rail-corridor',
+    coordinates: dedupeCoordinates([[from.lng, from.lat], ...sampled.map((point) => [point.lng, point.lat]), [to.lng, to.lat]]),
+  };
+}
+
+function queryRailPoints(railIndex, minLng, minLat, maxLng, maxLat) {
+  const points = [];
+  const minX = Math.floor(minLng / railIndex.cellSize);
+  const maxX = Math.floor(maxLng / railIndex.cellSize);
+  const minY = Math.floor(minLat / railIndex.cellSize);
+  const maxY = Math.floor(maxLat / railIndex.cellSize);
+  for (let x = minX; x <= maxX; x += 1) {
+    for (let y = minY; y <= maxY; y += 1) {
+      const cell = railIndex.cells.get(`${x}:${y}`);
+      if (cell) points.push(...cell);
+    }
+  }
+  return points;
+}
+
+function sampleRailCandidates(candidates, directKm) {
+  const minSpacingKm = directKm > 220 ? 9 : 4;
+  const filtered = [];
+  for (const point of candidates) {
+    const previous = filtered[filtered.length - 1];
+    if (!previous || distance(previous, point) >= minSpacingKm) filtered.push(point);
+  }
+  const maxPoints = directKm > 260 ? 46 : 28;
+  if (filtered.length <= maxPoints) return filtered;
+  const sampled = [];
+  for (let i = 0; i < maxPoints; i += 1) {
+    sampled.push(filtered[Math.floor(i * (filtered.length - 1) / (maxPoints - 1))]);
+  }
+  return sampled;
+}
+
+function mergeSegmentGeometries(segments) {
+  const coordinates = [];
+  for (const segment of segments) {
+    for (const coord of segment.geometry || []) {
+      const previous = coordinates[coordinates.length - 1];
+      if (!previous || previous[0] !== coord[0] || previous[1] !== coord[1]) coordinates.push(coord);
+    }
+  }
+  return coordinates;
+}
+
+function dedupeCoordinates(coordinates) {
+  const result = [];
+  for (const coord of coordinates) {
+    const previous = result[result.length - 1];
+    if (!previous || distance({ lng: previous[0], lat: previous[1] }, { lng: coord[0], lat: coord[1] }) > 1) {
+      result.push(coord);
+    }
+  }
+  return result;
+}
+
+function gridKey(lng, lat, cellSize) {
+  return `${Math.floor(lng / cellSize)}:${Math.floor(lat / cellSize)}`;
 }
 
 function parseCsv(text) {
@@ -357,6 +463,15 @@ function project(a, b, p) {
 
 function detourKm(a, b, p) {
   return distance(a, p) + distance(p, b) - distance(a, b);
+}
+
+function perpendicularDistanceKm(a, b, p) {
+  const projection = Math.max(0, Math.min(1, project(a, b, p)));
+  const projected = {
+    lng: a.lng + (b.lng - a.lng) * projection,
+    lat: a.lat + (b.lat - a.lat) * projection,
+  };
+  return distance(projected, p);
 }
 
 function radians(value) {

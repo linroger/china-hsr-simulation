@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Accessibility, Armchair, BadgeJapaneseYen, TicketCheck } from 'lucide-react';
 
 const CLASS_LABELS = {
@@ -7,7 +7,7 @@ const CLASS_LABELS = {
   secondClass: 'Second / 二等座',
 };
 
-export default function BookingPanel({ snapshot, engine, onSnapshot }) {
+export default function BookingPanel({ snapshot, quoteTrip, bookTrip }) {
   const trains = (snapshot.bookingOptions || snapshot.trains).filter((train) => train.stops.length >= 2);
   const [trainId, setTrainId] = useState(trains[0]?.id || '');
   const selectedTrain = trains.find((train) => train.id === trainId) || trains[0];
@@ -17,16 +17,33 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
   const [preference, setPreference] = useState('any');
   const [accessible, setAccessible] = useState(false);
   const [result, setResult] = useState(null);
+  const [quote, setQuote] = useState(null);
+  const [quotePending, setQuotePending] = useState(false);
+  const [bookingPending, setBookingPending] = useState(false);
 
   const safeDestinationIndex = Math.max(originIndex + 1, Math.min(destinationIndex, (selectedTrain?.stops.length || 2) - 1));
-  const quote = useMemo(() => {
-    if (!engine || !selectedTrain) return null;
-    try {
-      return engine.quoteTrip({ trainId: selectedTrain.id, originIndex, destinationIndex: safeDestinationIndex, seatClass });
-    } catch {
-      return null;
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshQuote() {
+      if (!quoteTrip || !selectedTrain) {
+        setQuote(null);
+        return;
+      }
+      setQuotePending(true);
+      try {
+        const nextQuote = await quoteTrip({ trainId: selectedTrain.id, originIndex, destinationIndex: safeDestinationIndex, seatClass });
+        if (!cancelled) setQuote(nextQuote);
+      } catch {
+        if (!cancelled) setQuote(null);
+      } finally {
+        if (!cancelled) setQuotePending(false);
+      }
     }
-  }, [engine, selectedTrain?.id, originIndex, safeDestinationIndex, seatClass, snapshot.stats.totalBookings]);
+    refreshQuote();
+    return () => {
+      cancelled = true;
+    };
+  }, [quoteTrip, selectedTrain?.id, originIndex, safeDestinationIndex, seatClass, snapshot.stats.totalBookings]);
 
   function handleTrainChange(nextTrainId) {
     setTrainId(nextTrainId);
@@ -35,8 +52,9 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
     setResult(null);
   }
 
-  function book() {
-    const response = engine.bookTrip({
+  async function book() {
+    setBookingPending(true);
+    const response = await bookTrip({
       trainId: selectedTrain.id,
       originIndex,
       destinationIndex: safeDestinationIndex,
@@ -46,7 +64,7 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
       passengerName: 'Dashboard Passenger',
     });
     setResult(response);
-    onSnapshot(engine.snapshot());
+    setBookingPending(false);
   }
 
   return (
@@ -107,9 +125,9 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
           Require accessible seating
         </label>
 
-        <button className="primary-action" disabled={!quote?.canBook} onClick={book}>
+        <button className="primary-action" disabled={!quote?.canBook || bookingPending} onClick={book}>
           <TicketCheck size={18} />
-          Book Ticket
+          {bookingPending ? 'Booking...' : 'Book Ticket'}
         </button>
       </section>
 
@@ -120,7 +138,7 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
             <div className="quote-price">
               <BadgeJapaneseYen size={28} />
               <strong>¥{quote.pricing.price.toLocaleString()}</strong>
-              <span>{quote.distanceKm} km · {quote.available} seats available · {quote.algorithmMs} ms</span>
+              <span>{quote.distanceKm} km · {quote.available} seats available · {quote.algorithmMs} ms · worker quote</span>
             </div>
             <div className="factor-grid">
               {Object.entries(quote.pricing.multipliers).map(([key, value]) => (
@@ -136,7 +154,7 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
               ))}
             </div>
           </>
-        ) : <p className="muted">Select a valid train interval to quote.</p>}
+        ) : <p className="muted">{quotePending ? 'Quoting in simulation worker...' : 'Select a valid train interval to quote.'}</p>}
 
         {result && (
           <div className={result.ok ? 'result success' : 'result failure'}>

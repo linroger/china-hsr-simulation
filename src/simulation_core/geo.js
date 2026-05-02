@@ -15,6 +15,36 @@ export function interpolateCoord(a, b, progress) {
   };
 }
 
+export function interpolateLine(coordinates, progress) {
+  if (!Array.isArray(coordinates) || coordinates.length === 0) return null;
+  if (coordinates.length === 1) return { lng: coordinates[0][0], lat: coordinates[0][1] };
+  const p = Math.max(0, Math.min(1, progress));
+  const segmentLengths = [];
+  let total = 0;
+  for (let i = 0; i < coordinates.length - 1; i += 1) {
+    const length = haversineKm(
+      { lng: coordinates[i][0], lat: coordinates[i][1] },
+      { lng: coordinates[i + 1][0], lat: coordinates[i + 1][1] },
+    );
+    segmentLengths.push(length);
+    total += length;
+  }
+  if (total <= 0) return { lng: coordinates[0][0], lat: coordinates[0][1] };
+  let target = total * p;
+  for (let i = 0; i < segmentLengths.length; i += 1) {
+    if (target <= segmentLengths[i]) {
+      return interpolateCoord(
+        { lng: coordinates[i][0], lat: coordinates[i][1] },
+        { lng: coordinates[i + 1][0], lat: coordinates[i + 1][1] },
+        segmentLengths[i] ? target / segmentLengths[i] : 0,
+      );
+    }
+    target -= segmentLengths[i];
+  }
+  const last = coordinates[coordinates.length - 1];
+  return { lng: last[0], lat: last[1] };
+}
+
 function toRad(value) {
   return value * Math.PI / 180;
 }

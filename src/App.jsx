@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Gauge, Map, ReceiptText, TrainFront } from 'lucide-react';
-import { SimulationEngine } from './simulation_core/SimulationEngine.js';
+import { SimulationWorkerClient } from './simulation_core/SimulationWorkerClient.js';
 import HSRMap from './visualization/HSRMap.jsx';
 import Dashboard from './visualization/Dashboard.jsx';
 import BookingPanel from './visualization/BookingPanel.jsx';
 
 export default function App() {
-  const engineRef = useRef(null);
+  const workerRef = useRef(null);
   const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState('Loading generated railway database...');
   const [activeView, setActiveView] = useState('map');
@@ -27,16 +27,23 @@ export default function App() {
         const stationData = await stationsResponse.json();
         const routeData = await routesResponse.json();
         if (cancelled) return;
-        const engine = new SimulationEngine({
+        setLoading('Starting simulation worker thread...');
+        const worker = new SimulationWorkerClient({
+          onSnapshot: (nextSnapshot) => {
+            if (!cancelled) setSnapshot(nextSnapshot);
+          },
+          onError: (message) => {
+            if (!cancelled) setError(message);
+          },
+        });
+        workerRef.current = worker;
+        await worker.init({
           stations: stationData.stations,
           routes: routeData.routes,
+          speed,
         });
-        engine.setSpeed(speed);
-        engine.callbacks.onUpdate = setSnapshot;
-        engineRef.current = engine;
-        setSnapshot(engine.snapshot());
+        await worker.start();
         setLoading('');
-        engine.start();
       } catch (err) {
         setError(err.message);
         setLoading('');
@@ -45,14 +52,25 @@ export default function App() {
     load();
     return () => {
       cancelled = true;
-      engineRef.current?.stop();
+      workerRef.current?.terminate();
     };
   }, []);
 
   function handleSpeedChange(nextSpeed) {
     setSpeed(nextSpeed);
-    engineRef.current?.setSpeed(nextSpeed);
+    workerRef.current?.setSpeed(nextSpeed);
   }
+
+  const quoteTrip = useCallback((payload) => {
+    return workerRef.current?.quoteTrip(payload);
+  }, []);
+
+  const bookTrip = useCallback(async (payload) => {
+    const result = await workerRef.current?.bookTrip(payload);
+    const nextSnapshot = await workerRef.current?.snapshot();
+    if (nextSnapshot) setSnapshot(nextSnapshot);
+    return result;
+  }, []);
 
   const activeIcon = useMemo(() => ({
     map: <Map size={16} />,
@@ -95,7 +113,7 @@ export default function App() {
       <section className="workspace">
         {activeView === 'map' && <HSRMap trains={snapshot.trains} events={snapshot.events} />}
         {activeView === 'dashboard' && <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} />}
-        {activeView === 'booking' && <BookingPanel snapshot={snapshot} engine={engineRef.current} onSnapshot={setSnapshot} />}
+        {activeView === 'booking' && <BookingPanel snapshot={snapshot} quoteTrip={quoteTrip} bookTrip={bookTrip} />}
       </section>
     </main>
   );
