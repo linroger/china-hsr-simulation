@@ -8,9 +8,12 @@ test('dynamic pricing orders seat classes and rises with scarcity', () => {
   const firstLow = priceQuote({ ...common, seatClass: 'firstClass', loadFactor: 0.15 });
   const businessLow = priceQuote({ ...common, seatClass: 'business', loadFactor: 0.15 });
   const secondHigh = priceQuote({ ...common, seatClass: 'secondClass', loadFactor: 0.93 });
+  const secondSurge = priceQuote({ ...common, seatClass: 'secondClass', loadFactor: 0.15, surgeMultiplier: 1.35 });
 
   assert.ok(firstLow.price > secondLow.price);
   assert.ok(businessLow.price > firstLow.price);
   assert.ok(secondHigh.price > secondLow.price);
   assert.ok(secondHigh.bidPrice > secondLow.bidPrice);
+  assert.ok(secondSurge.price > secondLow.price);
+  assert.equal(secondSurge.multipliers.surge, 1.35);
 });

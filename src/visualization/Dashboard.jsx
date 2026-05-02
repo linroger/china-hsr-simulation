@@ -1,5 +1,5 @@
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { CircleDollarSign, Timer, TrainFront, Users } from 'lucide-react';
+import { CalendarDays, CircleDollarSign, Gauge, Timer, TrainFront, TrendingUp, Users } from 'lucide-react';
 
 export default function Dashboard({ snapshot, speed, onSpeedChange }) {
   const trains = snapshot.trains || [];
@@ -13,11 +13,16 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
         <Metric icon={<Users />} label="Passengers booked" value={snapshot.stats.totalPassengers.toLocaleString()} />
         <Metric icon={<TrainFront />} label="Active / total trains" value={`${snapshot.stats.activeTrains || 0}/${snapshot.stats.trainCount || trains.length}`} />
         <Metric icon={<Timer />} label="Visible on map" value={snapshot.stats.visibleTrainCount || trains.length} />
+        <Metric icon={<CalendarDays />} label="Calendar day" value={`${snapshot.stats.simulationDate || 'Jan 1'} ${snapshot.stats.simulationClock || ''}`} />
+        <Metric icon={<TrendingUp />} label="Demand surge" value={`${snapshot.stats.calendarLabel || 'Normal'} · ${snapshot.stats.calendarDemandMultiplier || 1}x`} />
+        <Metric icon={<CircleDollarSign />} label="Price surge" value={`${snapshot.stats.calendarPriceSurgeMultiplier || 1}x`} />
         <Metric icon={<Timer />} label="Active avg delay" value={`${snapshot.stats.activeAverageDelayMinutes || 0} min`} />
         <Metric icon={<Users />} label="No-show releases" value={snapshot.stats.noShows || 0} />
         <Metric icon={<TrainFront />} label="Simulation thread" value={snapshot.worker?.thread || 'main'} />
+        <Metric icon={<Gauge />} label="Worker cadence" value={`${snapshot.worker?.snapshotIntervalMs || '—'} ms`} />
         <Metric icon={<Users />} label="Seat quota / train" value={snapshot.stats.seatQuotaPerTrain || 554} />
-        <Metric icon={<TrainFront />} label="Trains / route" value={snapshot.stats.trainsPerRoute || '—'} />
+        <Metric icon={<TrainFront />} label="Trains / route" value={`${snapshot.stats.trainsPerRoute || '—'} avg`} />
+        <Metric icon={<TrainFront />} label="Route daily range" value={`${snapshot.stats.minTrainsPerRoute || 0}-${snapshot.stats.maxTrainsPerRoute || 0}`} />
       </section>
 
       <section className="control-strip">
@@ -74,6 +79,8 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
             <Realism label="Active delayed trains >= 3 min" value={snapshot.stats.activeDelayedTrains || 0} />
             <Realism label="No-show seats released" value={snapshot.stats.noShows || 0} />
             <Realism label="Map render cap" value={snapshot.stats.visibleTrainCount || trains.length} />
+            <Realism label="Median trains per route" value={snapshot.stats.medianTrainsPerRoute || 0} />
+            <Realism label="Calendar capacity multiplier" value={`${snapshot.stats.calendarCapacityMultiplier || 1}x`} />
           </div>
         </div>
       </section>

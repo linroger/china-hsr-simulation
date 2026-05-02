@@ -1,5 +1,7 @@
 import { SimulationEngine } from './SimulationEngine.js';
 
+const SNAPSHOT_INTERVAL_MS = 100;
+
 let engine = null;
 let publishTimer = null;
 let initialized = false;
@@ -50,7 +52,7 @@ self.onmessage = (event) => {
 
 function startPublishing() {
   stopPublishing();
-  publishTimer = setInterval(() => postSnapshot('tick'), 250);
+  publishTimer = setInterval(() => postSnapshot('tick'), SNAPSHOT_INTERVAL_MS);
 }
 
 function stopPublishing() {
@@ -64,7 +66,7 @@ function postSnapshot(reason) {
     type: 'snapshot',
     reason,
     snapshot: {
-      ...engine.snapshot(),
+      ...engine.snapshot({ includeBookingOptions: reason !== 'tick' }),
       worker: workerInfo(),
     },
   });
@@ -83,6 +85,6 @@ function workerInfo() {
   return {
     mode: 'web-worker',
     thread: 'simulation-worker',
-    snapshotIntervalMs: 250,
+    snapshotIntervalMs: SNAPSHOT_INTERVAL_MS,
   };
 }

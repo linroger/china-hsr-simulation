@@ -8,6 +8,12 @@ const MAPBOX_STYLE = import.meta.env.VITE_MAPBOX_STYLE || 'mapbox://styles/linro
 export default function HSRMap({ trains, events }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
+  const currentTrainsRef = useRef([]);
+  const previousTrainsRef = useRef([]);
+  const targetTrainsRef = useRef([]);
+  const transitionRef = useRef({ started: 0, duration: 140 });
+  const frameRef = useRef(null);
+  const animateRef = useRef(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
 
@@ -89,9 +95,9 @@ export default function HSRMap({ trains, events }) {
         type: 'circle',
         source: 'trains',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'load'], 0, 3.5, 1, 8],
+          'circle-radius': ['interpolate', ['linear'], ['get', 'load'], 0, 2.3, 1, 5.8],
           'circle-color': ['interpolate', ['linear'], ['get', 'load'], 0, '#10b981', 0.72, '#f59e0b', 0.95, '#ef4444'],
-          'circle-stroke-width': 1.4,
+          'circle-stroke-width': 0.9,
           'circle-stroke-color': '#ffffff',
         },
       });
@@ -129,8 +135,35 @@ export default function HSRMap({ trains, events }) {
   }, []);
 
   useEffect(() => {
+    animateRef.current = (timestamp) => {
+      if (!mapRef.current?.getSource('trains')) {
+        frameRef.current = null;
+        return;
+      }
+      const { started, duration } = transitionRef.current;
+      const progress = Math.min(1, Math.max(0, (timestamp - started) / duration));
+      const eased = easeInOut(progress);
+      const rendered = interpolateTrainSet(previousTrainsRef.current, targetTrainsRef.current, eased);
+      currentTrainsRef.current = rendered;
+      mapRef.current.getSource('trains').setData(trainGeojson(rendered));
+      if (progress < 1) {
+        frameRef.current = requestAnimationFrame(animateRef.current);
+      } else {
+        frameRef.current = null;
+      }
+    };
+    return () => {
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    };
+  }, [ready]);
+
+  useEffect(() => {
     if (!ready || !mapRef.current?.getSource('trains')) return;
-    mapRef.current.getSource('trains').setData(trainGeojson(trains));
+    const start = performance.now();
+    previousTrainsRef.current = currentTrainsRef.current.length ? currentTrainsRef.current : trains;
+    targetTrainsRef.current = trains;
+    transitionRef.current = { started: start, duration: 150 };
+    if (!frameRef.current) frameRef.current = requestAnimationFrame(animateRef.current);
   }, [ready, trains]);
 
   return (
@@ -170,6 +203,25 @@ function trainGeojson(trains = []) {
           current: train.currentStation,
           next: train.nextStation,
         },
-      })),
+    })),
   };
+}
+
+function interpolateTrainSet(previousTrains = [], targetTrains = [], progress = 1) {
+  const previousById = new Map(previousTrains.map((train) => [train.id, train]));
+  return targetTrains.map((train) => {
+    const previous = previousById.get(train.id);
+    if (!previous?.coords || !train.coords || previous.status !== train.status) return train;
+    return {
+      ...train,
+      coords: {
+        lng: previous.coords.lng + (train.coords.lng - previous.coords.lng) * progress,
+        lat: previous.coords.lat + (train.coords.lat - previous.coords.lat) * progress,
+      },
+    };
+  });
+}
+
+function easeInOut(value) {
+  return value < 0.5 ? 2 * value * value : 1 - Math.pow(-2 * value + 2, 2) / 2;
 }

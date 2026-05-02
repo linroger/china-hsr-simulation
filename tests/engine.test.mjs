@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SimulationEngine } from '../src/simulation_core/SimulationEngine.js';
+import { calendarState, SimulationEngine } from '../src/simulation_core/SimulationEngine.js';
 
 const route = {
   id: 'r1',
@@ -24,7 +24,7 @@ const route = {
 };
 
 test('booking engine returns ticket details and mutates interval availability', () => {
-  const engine = new SimulationEngine({ routes: [route], seed: 1 });
+  const engine = new SimulationEngine({ routes: [route], seed: 1, preloadDemand: false });
   const quote = engine.quoteTrip({ trainId: 'r1', originIndex: 0, destinationIndex: 2, seatClass: 'secondClass' });
   assert.equal(quote.canBook, true);
   assert.ok(quote.price !== 0 || quote.pricing.price > 0);
@@ -54,10 +54,35 @@ test('engine creates scalable scheduled services and full booking options', () =
   const engine = new SimulationEngine({ routes, seed: 2, maxTrains: 30 });
   const snapshot = engine.snapshot();
 
-  assert.equal(engine.trains.length, 30);
-  assert.equal(snapshot.bookingOptions.length, 30);
+  assert.equal(engine.trains.length, 40);
+  assert.equal(snapshot.bookingOptions.length, 40);
+  assert.equal(snapshot.stats.minTrainsPerRoute, 2);
   assert.ok(snapshot.network.corridors.length >= 2);
   assert.ok(snapshot.stats.averageDelayMinutes > 0);
+});
+
+test('calendar starts on January 1 and applies route-level surge service planning', () => {
+  const calendar = calendarState(8 * 60 + 20);
+  assert.equal(calendar.dateIso, '2026-01-01');
+  assert.equal(calendar.label, 'New Year travel surge');
+  assert.ok(calendar.demandMultiplier > 1);
+  assert.ok(calendar.priceSurgeMultiplier > 1);
+
+  const routes = Array.from({ length: 12 }, (_, index) => ({
+    ...route,
+    id: `calendar-${index}`,
+    code: `G${900 + index}`,
+    corridor: 'East China / North China',
+    originProvince: '北京',
+    destinationProvince: '上海',
+    frequencyRank: index < 3 ? 0.95 : 0.18,
+  }));
+  const engine = new SimulationEngine({ routes, seed: 22, maxTrains: 240 });
+  const snapshot = engine.snapshot();
+  assert.equal(snapshot.calendar.dateIso, '2026-01-01');
+  assert.equal(snapshot.stats.minTrainsPerRoute >= 2, true);
+  assert.equal(snapshot.stats.maxTrainsPerRoute > snapshot.stats.minTrainsPerRoute, true);
+  assert.ok(snapshot.stats.trainsPerRoute > 2);
 });
 
 test('no-show passengers release their seat inventory after departure', () => {

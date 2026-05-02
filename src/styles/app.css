@@ -99,6 +99,9 @@ input {
   color: #9fb3ca;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+  line-height: 1.25;
 }
 
 .workspace {
@@ -270,7 +273,9 @@ input {
 }
 
 .metric strong {
-  font-size: 25px;
+  font-size: 23px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
 }
 
 .control-strip {

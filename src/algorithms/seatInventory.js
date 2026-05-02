@@ -67,6 +67,22 @@ export class SeatInventory {
     this.routeStations = routeStations;
     this.seats = seats.map((seat) => ({ ...seat, intervals: [...(seat.intervals || [])] }));
     this.seatById = new Map(this.seats.map((seat) => [seat.id, seat]));
+    this.seatsByClass = new Map();
+    this.capacityByClass = new Map();
+    this.segmentLoadsByClass = new Map();
+    this.segmentLoadsTotal = Array.from({ length: routeStations.length - 1 }, () => 0);
+    for (const seat of this.seats) {
+      if (!this.seatsByClass.has(seat.seatClass)) this.seatsByClass.set(seat.seatClass, []);
+      this.seatsByClass.get(seat.seatClass).push(seat);
+    }
+    for (const seatClass of CLASS_ORDER) {
+      const seatsForClass = this.seatsByClass.get(seatClass) || [];
+      this.capacityByClass.set(seatClass, seatsForClass.length);
+      this.segmentLoadsByClass.set(seatClass, Array.from({ length: routeStations.length - 1 }, () => 0));
+    }
+    for (const seat of this.seats) {
+      for (const interval of seat.intervals) this.adjustSegmentLoads(seat.seatClass, interval.originIndex, interval.destinationIndex, 1);
+    }
   }
 
   clone() {
@@ -94,11 +110,32 @@ export class SeatInventory {
 
   availableSeats({ originIndex, destinationIndex, seatClass, accessible = false, preference = 'any' }) {
     this.validateInterval(originIndex, destinationIndex);
-    return this.seats
-      .filter((seat) => !seatClass || seat.seatClass === seatClass)
+    const pool = seatClass ? this.seatsByClass.get(seatClass) || [] : this.seats;
+    return pool
       .filter((seat) => !accessible || seat.accessible)
       .filter((seat) => this.isSeatAvailable(seat.id, originIndex, destinationIndex))
       .sort((a, b) => scoreSeat(b, preference, originIndex, destinationIndex) - scoreSeat(a, preference, originIndex, destinationIndex));
+  }
+
+  availabilityCount({ originIndex, destinationIndex, seatClass, accessible = false }) {
+    this.validateInterval(originIndex, destinationIndex);
+    const pool = seatClass ? this.seatsByClass.get(seatClass) || [] : this.seats;
+    let count = 0;
+    for (const seat of pool) {
+      if ((!accessible || seat.accessible) && this.isSeatAvailable(seat.id, originIndex, destinationIndex)) count += 1;
+    }
+    return count;
+  }
+
+  canFitGroup({ originIndex, destinationIndex, seatClass, groupSize = 1 }) {
+    this.validateInterval(originIndex, destinationIndex);
+    const capacity = seatClass ? this.capacityByClass.get(seatClass) || 0 : this.seats.length;
+    if (groupSize > capacity) return false;
+    const loads = seatClass ? this.segmentLoadsByClass.get(seatClass) : this.segmentLoadsTotal;
+    for (let segment = originIndex; segment < destinationIndex; segment += 1) {
+      if (((loads?.[segment] || 0) + groupSize) > capacity) return false;
+    }
+    return true;
   }
 
   allocate({ originIndex, destinationIndex, seatClass, passengerId, ticketId, preference = 'any', accessible = false, groupSize = 1 }) {
@@ -106,13 +143,13 @@ export class SeatInventory {
     if (groupSize < 1 || groupSize > 6) {
       throw new Error('Group bookings support 1 to 6 passengers in this simulator.');
     }
-    const candidates = this.availableSeats({ originIndex, destinationIndex, seatClass, accessible, preference });
-    if (candidates.length < groupSize) return null;
-
-    const group = chooseGroup(candidates, groupSize);
+    if (!this.canFitGroup({ originIndex, destinationIndex, seatClass, groupSize })) return null;
+    const group = this.findAllocationGroup({ originIndex, destinationIndex, seatClass, accessible, preference, groupSize });
+    if (!group) return null;
     for (const seat of group) {
       seat.intervals.push({ originIndex, destinationIndex, passengerId, ticketId });
       seat.intervals.sort((a, b) => a.originIndex - b.originIndex || a.destinationIndex - b.destinationIndex);
+      this.adjustSegmentLoads(seat.seatClass, originIndex, destinationIndex, 1);
     }
     return group.map((seat) => ({
       seatId: seat.id,
@@ -125,23 +162,51 @@ export class SeatInventory {
     }));
   }
 
+  findAllocationGroup({ originIndex, destinationIndex, seatClass, accessible, preference, groupSize }) {
+    if (preference !== 'any' || accessible) {
+      const candidates = this.availableSeats({ originIndex, destinationIndex, seatClass, accessible, preference });
+      return candidates.length >= groupSize ? chooseGroup(candidates, groupSize) : null;
+    }
+
+    const pool = seatClass ? this.seatsByClass.get(seatClass) || [] : this.seats;
+    const byCarRow = new Map();
+    const fallback = [];
+    const rowCapacity = seatClass ? SEAT_CLASSES[seatClass]?.layout.length || 5 : 5;
+    for (const seat of pool) {
+      if (!this.isSeatAvailable(seat.id, originIndex, destinationIndex)) continue;
+      if (groupSize === 1) return [seat];
+      fallback.push(seat);
+      const key = `${seat.car}-${seat.row}`;
+      if (!byCarRow.has(key)) byCarRow.set(key, []);
+      const seats = byCarRow.get(key);
+      seats.push(seat);
+      if (seats.length >= groupSize) return seats.slice(0, groupSize);
+      if (fallback.length >= groupSize && groupSize > rowCapacity) return fallback.slice(0, groupSize);
+    }
+    return fallback.length >= groupSize ? fallback.slice(0, groupSize) : null;
+  }
+
   releaseTicket(ticketId) {
     let released = 0;
     for (const seat of this.seats) {
       const before = seat.intervals.length;
+      const releasedIntervals = seat.intervals.filter((interval) => interval.ticketId === ticketId);
       seat.intervals = seat.intervals.filter((interval) => interval.ticketId !== ticketId);
+      for (const interval of releasedIntervals) this.adjustSegmentLoads(seat.seatClass, interval.originIndex, interval.destinationIndex, -1);
       released += before - seat.intervals.length;
     }
     return released;
   }
 
   occupancyForSegment(segmentIndex, seatClass = null) {
-    const relevantSeats = this.seats.filter((seat) => !seatClass || seat.seatClass === seatClass);
-    const occupied = relevantSeats.filter((seat) => seat.intervals.some((held) => held.originIndex <= segmentIndex && segmentIndex < held.destinationIndex)).length;
+    const capacity = seatClass ? this.capacityByClass.get(seatClass) || 0 : this.seats.length;
+    const occupied = seatClass
+      ? this.segmentLoadsByClass.get(seatClass)?.[segmentIndex] || 0
+      : this.segmentLoadsTotal[segmentIndex] || 0;
     return {
       occupied,
-      capacity: relevantSeats.length,
-      loadFactor: relevantSeats.length ? occupied / relevantSeats.length : 0,
+      capacity,
+      loadFactor: capacity ? occupied / capacity : 0,
     };
   }
 
@@ -168,8 +233,16 @@ export class SeatInventory {
   classAvailability(originIndex, destinationIndex) {
     return Object.fromEntries(CLASS_ORDER.map((seatClass) => [
       seatClass,
-      this.availableSeats({ originIndex, destinationIndex, seatClass }).length,
+      this.availabilityCount({ originIndex, destinationIndex, seatClass }),
     ]));
+  }
+
+  adjustSegmentLoads(seatClass, originIndex, destinationIndex, delta) {
+    const classLoads = this.segmentLoadsByClass.get(seatClass);
+    for (let segment = originIndex; segment < destinationIndex; segment += 1) {
+      if (classLoads) classLoads[segment] = Math.max(0, (classLoads[segment] || 0) + delta);
+      this.segmentLoadsTotal[segment] = Math.max(0, (this.segmentLoadsTotal[segment] || 0) + delta);
+    }
   }
 }
 

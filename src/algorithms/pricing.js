@@ -11,6 +11,7 @@ export function priceQuote({
   frequencyRank = 0.5,
   noShowRisk = 0.035,
   elasticity = -1.25,
+  surgeMultiplier = 1,
 }) {
   const config = SEAT_CLASSES[seatClass];
   if (!config) throw new Error(`Unknown seat class: ${seatClass}`);
@@ -23,7 +24,7 @@ export function priceQuote({
   const noShowBuffer = 1 + Math.min(0.06, noShowRisk);
   const bidPrice = distanceKm * BASE_SECOND_CLASS_YUAN_PER_KM * Math.pow(Math.max(0.03, loadFactor), 1.8) * config.multiplier * 0.42;
   const expectedDemandLift = Math.exp(elasticity * Math.log(Math.max(0.7, scarcity * timePressure)));
-  const raw = (baseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer;
+  const raw = (baseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer * Math.max(0.8, surgeMultiplier);
   return {
     price: roundToNearest(raw, 5),
     baseFare: roundToNearest(baseFare, 1),
@@ -35,19 +36,20 @@ export function priceQuote({
       peak: round(peak),
       frequencyRelief: round(frequencyRelief),
       noShowBuffer: round(noShowBuffer),
+      surge: round(surgeMultiplier),
     },
     elasticity,
     expectedDemandLift: round(expectedDemandLift),
   };
 }
 
-export function reconcileDemandForecast({ routeDistanceKm, segmentLoad, dayOfWeek, hour, stationTier }) {
+export function reconcileDemandForecast({ routeDistanceKm, segmentLoad, dayOfWeek, hour, stationTier, calendarDemand = 1 }) {
   const weekend = dayOfWeek === 0 || dayOfWeek === 6 ? 1.1 : 1;
   const peak = hour >= 7 && hour <= 9 || hour >= 17 && hour <= 20 ? 1.25 : 1;
   const hub = stationTier === 'national-hub' ? 1.22 : stationTier === 'regional-hub' ? 1.1 : 1;
   const distance = routeDistanceKm > 900 ? 0.92 : routeDistanceKm > 350 ? 1.08 : 1;
   const pressure = 0.65 + segmentLoad * 0.7;
-  return round(weekend * peak * hub * distance * pressure);
+  return round(weekend * peak * hub * distance * pressure * calendarDemand);
 }
 
 function sigmoid(x) {

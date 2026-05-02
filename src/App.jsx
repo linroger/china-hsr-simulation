@@ -30,7 +30,7 @@ export default function App() {
         setLoading('Starting simulation worker thread...');
         const worker = new SimulationWorkerClient({
           onSnapshot: (nextSnapshot) => {
-            if (!cancelled) setSnapshot(nextSnapshot);
+            if (!cancelled) setSnapshot((previous) => mergeSnapshot(previous, nextSnapshot));
           },
           onError: (message) => {
             if (!cancelled) setError(message);
@@ -89,7 +89,7 @@ export default function App() {
           <TrainFront size={28} />
           <div>
             <h1>China HSR Simulation</h1>
-            <p>{snapshot.stats.trainCount || snapshot.trains.length} trains · {snapshot.stats.activeTrains || 0} active · {snapshot.stats.totalBookings} bookings · ¥{Math.round(snapshot.stats.totalRevenue).toLocaleString()}</p>
+            <p>{snapshot.stats.trainCount || snapshot.trains.length} trains · {snapshot.stats.activeTrains || 0} active · {snapshot.stats.totalPassengers.toLocaleString()} passengers · ¥{Math.round(snapshot.stats.totalRevenue).toLocaleString()}</p>
           </div>
         </div>
         <nav className="view-tabs" aria-label="Simulation views">
@@ -106,7 +106,7 @@ export default function App() {
         </nav>
         <div className="clock">
           <Activity size={15} />
-          <span>{formatClock(snapshot.nowMinutes)}</span>
+          <span>{formatSimulationClock(snapshot)}</span>
         </div>
       </header>
 
@@ -143,4 +143,20 @@ function formatClock(minutes) {
   const hour = Math.floor(normalized / 60).toString().padStart(2, '0');
   const minute = Math.floor(normalized % 60).toString().padStart(2, '0');
   return `${hour}:${minute}`;
+}
+
+function formatSimulationClock(snapshot) {
+  const calendar = snapshot.calendar;
+  const time = calendar?.clock || formatClock(snapshot.nowMinutes);
+  const date = calendar?.dateLabel ? `${calendar.dateLabel} ${calendar.dayName}` : 'Jan 1';
+  const label = calendar?.label && calendar.label !== 'Normal weekday' ? ` · ${calendar.label}` : '';
+  return `${date} · ${time}${label}`;
+}
+
+function mergeSnapshot(previous, nextSnapshot) {
+  if (!previous || nextSnapshot.bookingOptions) return nextSnapshot;
+  return {
+    ...nextSnapshot,
+    bookingOptions: previous.bookingOptions,
+  };
 }
