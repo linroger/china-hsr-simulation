@@ -9,6 +9,7 @@ const STATION_CSV = path.join(SOURCE_ROOT, 'China-rail-way-stations-data-main/sr
 const LINE_CSV = path.join(SOURCE_ROOT, 'China-rail-way-stations-data-main/src/line.csv');
 const OSM_POINTS = path.join(SOURCE_ROOT, 'hotosm_chn_railways_points_geojson/hotosm_chn_railways_points_geojson.geojson');
 const OSM_LINES = path.join(SOURCE_ROOT, 'hotosm_chn_railways_lines_geojson/hotosm_chn_railways_lines_geojson.geojson');
+const MAX_SIMULATION_ROUTES = 1200;
 
 fs.mkdirSync(PUBLIC, { recursive: true });
 
@@ -52,9 +53,21 @@ for (const record of knownRoutes) {
 }
 const maxFrequency = Math.max(...serviceFrequency.values());
 
-const simulationRoutes = knownRoutes
-  .filter((record) => distance(stationByName.get(record.origin), stationByName.get(record.destination)) > 120)
-  .slice(0, 280)
+const simulationCandidates = knownRoutes
+  .filter((record) => distance(stationByName.get(record.origin), stationByName.get(record.destination)) > 80)
+  .map((record) => {
+    const origin = stationByName.get(record.origin);
+    const destination = stationByName.get(record.destination);
+    return {
+      ...record,
+      originProvince: origin.province,
+      destinationProvince: destination.province,
+      distanceKm: Math.round(distance(origin, destination) * 1.12),
+      corridor: corridorKey(origin, destination),
+    };
+  });
+
+const simulationRoutes = selectDiverseRecords(simulationCandidates, MAX_SIMULATION_ROUTES)
   .map((record, index) => buildRoute(record, index));
 
 const stationsGeojson = {
@@ -87,6 +100,7 @@ writeJson('route-data.json', {
   routeRecordCount: allRouteRecords.length,
   knownEndpointRecordCount: knownRoutes.length,
   simulationRouteCount: simulationRoutes.length,
+  diversity: summarizeDiversity(simulationRoutes),
   routes: simulationRoutes,
   routeRecords: allRouteRecords,
 });
@@ -97,6 +111,8 @@ console.log(`[prepare:data] stations: ${stations.length}`);
 console.log(`[prepare:data] HSR service records: ${allRouteRecords.length}`);
 console.log(`[prepare:data] known endpoint records: ${knownRoutes.length}`);
 console.log(`[prepare:data] simulation routes: ${simulationRoutes.length}`);
+console.log(`[prepare:data] unique origins: ${new Set(simulationRoutes.map((route) => route.origin)).size}`);
+console.log(`[prepare:data] unique corridors: ${new Set(simulationRoutes.map((route) => route.corridor)).size}`);
 console.log(`[prepare:data] rail line features: ${railGeojson.features.length}`);
 
 function buildRoute(record, index) {
@@ -145,9 +161,97 @@ function buildRoute(record, index) {
     destination: record.destination,
     totalDistanceKm: segments.reduce((sum, segment) => sum + segment.distanceKm, 0),
     frequencyRank: (serviceFrequency.get(key) || 1) / maxFrequency,
+    corridor: record.corridor,
+    originProvince: origin.province,
+    destinationProvince: destination.province,
     provenance: 'Real train origin/destination; intermediate stops simulation-derived from station geography.',
     stops,
     segments,
+  };
+}
+
+function selectDiverseRecords(records, limit) {
+  const byCorridor = groupBy(records, (record) => record.corridor);
+  const selected = [];
+  const selectedKeys = new Set();
+
+  // Give every observed macro-corridor a baseline so the map does not collapse
+  // into the first few records in line.csv.
+  for (const corridorRecords of [...byCorridor.values()].sort((a, b) => b.length - a.length)) {
+    const sorted = corridorRecords.slice().sort(compareRoutePriority);
+    for (const record of sorted.slice(0, 4)) addRecord(record);
+  }
+
+  // Then round-robin by origin province and origin station. This keeps trunk
+  // corridors dense while still allowing smaller regional services to appear.
+  const byProvince = groupBy(records.slice().sort(compareRoutePriority), (record) => record.originProvince || 'unknown');
+  while (selected.length < limit) {
+    let madeProgress = false;
+    for (const provinceRecords of byProvince.values()) {
+      const next = provinceRecords.find((record) => !selectedKeys.has(recordKey(record)));
+      if (next) {
+        addRecord(next);
+        madeProgress = true;
+        if (selected.length >= limit) break;
+      }
+    }
+    if (!madeProgress) break;
+  }
+
+  return selected.slice(0, limit);
+
+  function addRecord(record) {
+    const key = recordKey(record);
+    if (selectedKeys.has(key) || selected.length >= limit) return;
+    selected.push(record);
+    selectedKeys.add(key);
+  }
+}
+
+function compareRoutePriority(a, b) {
+  const aFrequency = serviceFrequency.get([a.origin, a.destination].sort().join('|')) || 1;
+  const bFrequency = serviceFrequency.get([b.origin, b.destination].sort().join('|')) || 1;
+  return bFrequency - aFrequency || b.distanceKm - a.distanceKm || a.code.localeCompare(b.code, 'zh-Hans-CN');
+}
+
+function recordKey(record) {
+  return `${record.trainNo}:${record.code}:${record.origin}:${record.destination}`;
+}
+
+function groupBy(items, keyFn) {
+  const grouped = new Map();
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  }
+  return grouped;
+}
+
+function corridorKey(origin, destination) {
+  const a = macroRegion(origin);
+  const b = macroRegion(destination);
+  return [a, b].sort().join(' / ');
+}
+
+function macroRegion(station) {
+  const province = station.province || '';
+  if (/北京|天津|河北|山东|山西|河南/.test(province)) return 'North China';
+  if (/上海|江苏|浙江|安徽|福建|江西/.test(province)) return 'East China';
+  if (/广东|广西|海南|香港|澳门/.test(province)) return 'South China';
+  if (/湖北|湖南/.test(province)) return 'Central China';
+  if (/重庆|四川|贵州|云南|西藏/.test(province)) return 'Southwest China';
+  if (/陕西|甘肃|青海|宁夏|新疆|内蒙古/.test(province)) return 'Northwest China';
+  if (/辽宁|吉林|黑龙江/.test(province)) return 'Northeast China';
+  return 'Other';
+}
+
+function summarizeDiversity(routes) {
+  return {
+    uniqueOrigins: new Set(routes.map((route) => route.origin)).size,
+    uniqueDestinations: new Set(routes.map((route) => route.destination)).size,
+    uniqueOriginProvinces: new Set(routes.map((route) => route.originProvince)).size,
+    uniqueCorridors: new Set(routes.map((route) => route.corridor)).size,
   };
 }
 

@@ -1,8 +1,8 @@
 # Handoff.md
 
-**Last Updated (UTC):** 2026-05-02T11:06:24Z
+**Last Updated (UTC):** 2026-05-02T11:17:49Z
 **Status:** Complete
-**Current Focus:** The first complete simulation slice is implemented, verified, and running locally at `http://127.0.0.1:5174/`.
+**Current Focus:** The simulation now uses diversified nationwide route sampling and 1,500 scheduled services, with verified map/booking scalability.
 
 This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 
@@ -11,17 +11,18 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Operational constraints / environment:** Work is rooted at `/Users/rogerlin/Downloads/chinashsr`. The requested deliverable lives in `/Users/rogerlin/Downloads/chinashsr/ChinaHSR_Simulation`. Available local datasets include station CSVs, train route CSVs, and HOTOSM railway point/line GeoJSON. The enclosing `/Users/rogerlin` git metadata is broken (`fatal: bad object HEAD`), so this folder carries its own local git repo, harness, and verification script.
 - **Guidelines / preferences to honor:** Maintain `handoff.md`, `feature_list.json`, `agent-progress.txt`, and `init.sh`. Work in small, verifiable increments. Do not store the supplied Mapbox secret token in source files. Use the public token and allow override with `VITE_MAPBOX_TOKEN`.
 - **Scope boundaries (explicit non-goals):** This implementation does not claim an official real-time 12306 production dataset. It builds a realistic simulation seeded from local station, train, and OSM datasets, with explicit provenance and generated schedules/routes where the local data does not include full stop-by-stop timetables.
-- **Changes since start (dated deltas):** 2026-05-02: Started a new deliverable folder after discovering an earlier `sim/` prototype and local source datasets. 2026-05-02T11:06:24Z: Completed the first verified implementation covering data generation, interval-aware booking, dynamic pricing, DES movement, Mapbox visualization, dashboard, tests, and local dev server launch.
+- **Changes since start (dated deltas):** 2026-05-02: Started a new deliverable folder after discovering an earlier `sim/` prototype and local source datasets. 2026-05-02T11:06:24Z: Completed the first verified implementation covering data generation, interval-aware booking, dynamic pricing, DES movement, Mapbox visualization, dashboard, tests, and local dev server launch. 2026-05-02T11:17:49Z: Reworked route selection and train scheduling after the user observed route clustering; the database now covers 1,200 simulation routes, 85 origins, 77 destinations, 27 origin provinces, and 27 macro-corridors, while the engine schedules 1,500 train services.
 
 ## 2) Requirements -> Acceptance Checks (traceable)
 | Requirement | Acceptance Check (scenario steps) | Expected Outcome | Evidence Captured |
 |---|---|---|---|
-| R1: Database of stations and routes | Run `./init.sh`, which builds data artifacts from station CSV, train CSV, and OSM GeoJSON. | `public/station-data.json`, `public/route-data.json`, `public/hsr-stations.geojson`, and `public/hsr-rails.geojson` exist and contain non-empty records. | Passed: 3,058 stations, 7,278 HSR service records, 4,640 known endpoint records, 280 simulation routes, 2,200 rail features. |
+| R1: Database of stations and routes | Run `./init.sh`, which builds data artifacts from station CSV, train CSV, and OSM GeoJSON. | `public/station-data.json`, `public/route-data.json`, `public/hsr-stations.geojson`, and `public/hsr-rails.geojson` exist and contain non-empty records. | Passed: 3,058 stations, 7,278 HSR service records, 4,640 known endpoint records, 1,200 simulation routes, 85 origins, 27 corridors, 2,200 rail features. |
 | R2: Segment-aware seat reuse | Run the booking engine regression test: book a seat A->C, reject overlap B->D for the same seat, allow reuse C->D after alighting. | The same seat can be allocated to non-overlapping intervals and not to overlapping intervals. | Passed in `tests/seatInventory.test.mjs`. |
 | R3: Robust booking algorithm | Exercise booking in the app and test engine-level `quoteTrip`/`bookTrip` paths. | Passenger receives a real ticket ID, seat ID, car/row/letter, price, and station interval; capacity and availability update by segment. | Passed in `tests/engine.test.mjs` and production build. |
 | R4: Dynamic pricing | Run tests and inspect UI quotes for different demand/time/class conditions. | Price changes with distance, seat class, segment occupancy pressure, booking horizon, route frequency, and peak-hour demand. | Passed in `tests/pricing.test.mjs`; quote panel exposes multiplier and bid-price metadata. |
 | R5: Interactive dashboard and Mapbox map | Run `npm run build` and `npm run dev`; open the app locally. | Map renders railway layers and train positions; dashboard shows trains, bookings, revenue, load factors, and event log. | Passed production build; Vite server running at `http://127.0.0.1:5174/`. |
 | R6: Secret-safe configuration | Search the new folder for the supplied Mapbox secret token prefix. | No `sk.` token is present in source; public token is used as a browser default and may be overridden with env var. | Passed: `rg "sk\\.ey" .` produced no matches and `./init.sh` secret scan passed. |
+| R7: Nationwide scalable service coverage | Run the data diversity and engine scale tests, then instantiate the full engine from generated data. | Routes are not dominated by the first CSV records; booking options cover the full scheduled train set; map rendering is capped to active/near-term trains for performance. | Passed: 1,500 trains, 170 active at initial snapshot, 389 visible/near-term trains, 1,500 booking options, 27 corridors, 27 origin provinces. |
 
 ## 3) Plan & Decomposition (with rationale)
 - **Critical path narrative:** The highest-risk requirement was seat reuse across station intervals. Implementing that as a pure, testable engine first reduced ambiguity before UI polish. Data generation came next so the dashboard and map are backed by reproducible artifacts. The React UI is now a view over verified simulation state.
@@ -45,27 +46,32 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Finding:** The enclosing git state is broken with `fatal: bad object HEAD`; this folder has its own local git repo for continuity.
 - **Decision:** Use a deterministic booking core with seat calendars keyed by segment intervals. A seat is available for `[originIndex, destinationIndex)` only when no existing booking interval overlaps it.
 - **Decision:** Generated route records keep all HSR OD records and expose 280 simulation-ready routes. Intermediate stop lists are generated from geographically plausible stations between endpoints and labeled as simulation-derived.
+- **Decision:** Replaced first-record route slicing with stratified route sampling by macro-corridor and origin province. The generated route set now exposes 1,200 simulation-ready routes.
+- **Decision:** The simulation engine now creates 1,500 scheduled train services from the route set, initializes movement state immediately, returns full lightweight `bookingOptions`, and caps visualized trains to active/near-term/completed services for browser performance.
 - **Assumption:** Local CSV route records provide real origin/destination train services but not full stop-by-stop timetables. This remains true until a more authoritative timetable source is added.
 
 ## 6) Issues, Mistakes, Recoveries
 - **Issue:** Prior prototype hardcoded booking confirmation. **Root cause:** UI was implemented before a real booking API. **Fix:** Exposed `quoteTrip`, `bookTrip`, and `cancelBooking` from the engine and routed UI bookings through them. **Guardrail:** `tests/engine.test.mjs` fails if booking does not mutate segment availability.
 - **Issue:** The parent git repository is unusable. **Root cause:** `/Users/rogerlin/.git` reports `fatal: bad object HEAD`. **Fix:** Initialize and commit inside `ChinaHSR_Simulation` rather than attempting to repair unrelated parent history.
+- **Issue:** User observed that most routes were not being travelled and trains clustered on a few corridors. **Root cause:** `prepare-data.cjs` selected the first 280 eligible route records and `SimulationEngine` only instantiated the first 120 routes. **Fix:** Added diversified route selection, 1,500 scheduled services, immediate movement-state initialization, full booking options, and dashboard coverage charts. **Guardrail:** `tests/dataDiversity.test.mjs` and the engine scale test fail if coverage collapses.
 
 ## 7) Scenario-Focused Resolution Tests (problem-centric)
 - **Requested change:** Seat opens after passenger gets off. **Repro steps:** Create a route A-B-C-D, allocate seat for A-C, attempt B-D, then allocate C-D. **Post-change behavior:** B-D cannot use the occupied seat, but C-D reuses the same physical seat because intervals touch but do not overlap. **Verdict:** Resolved by `SeatInventory`.
 - **Requested change:** Dynamic pricing. **Repro steps:** Quote the same OD/class under low and high occupancy. **Post-change behavior:** High-occupancy quote is higher, and first/business class quotes exceed second class. **Verdict:** Resolved by `priceQuote`.
 - **Requested change:** Interactive dashboard and Mapbox map. **Repro steps:** Run `npm run dev -- --port 5173`, allow Vite to select an open port, and request the page. **Post-change behavior:** Server responds `HTTP/1.1 200 OK` at `http://127.0.0.1:5174/`; app loads generated station/route data and uses Mapbox GL with the public token/style.
+- **Requested change:** More comprehensive nationwide route travel. **Repro steps:** Run `npm run prepare:data`, inspect diversity counts, instantiate the engine from generated data, and inspect snapshot stats. **Post-change behavior:** Data contains 1,200 routes across 85 origins and 27 corridors; engine instantiates 1,500 trains, has 170 active at initial snapshot, exposes 1,500 booking options, and caps visible trains to 389 active/near-term services. **Verdict:** Resolved for the current local data source.
 
 ## 8) Verification Summary (evidence over intuition)
-- **Fast checks run:** `npm run prepare:data`, `npm test`, `npm run build`, `rg "sk\\.ey" .`, `curl -I http://127.0.0.1:5174/`.
-- **Acceptance runs:** `./init.sh` passed, including data prep, 3 Node tests, production build, and secret scan.
+- **Fast checks run:** `npm run prepare:data`, `npm test`, `npm run build`, `rg "sk\\.ey" .`, `curl -I http://127.0.0.1:5174/`, full-engine scale probe from generated route data.
+- **Acceptance runs:** `./init.sh` passed, including data prep, 5 Node tests, production build, and secret scan.
 - **Performance/latency snapshots (if relevant):** Booking quote test path reports sub-millisecond algorithm timing in unit tests; production UI quote panel displays `algorithmMs` for each quote.
 
 ## 9) Remaining Work & Next Steps
-- **Open items & blockers:** No implementation blocker remains for the first complete slice. The local repo branch is `main`. The Vite dev server is running at `http://127.0.0.1:5174/`.
+- **Open items & blockers:** No implementation blocker remains for the first complete slice or the route-coverage improvement. The local repo branch is `main`. The Vite dev server is running at `http://127.0.0.1:5174/`.
 - **Risks:** The local data does not encode an authoritative full HSR timetable, so route stop sequences are simulated from real stations and real train OD pairs. The README and route metadata disclose that provenance.
 - **Next working interval plan:** Improve realism by adding authoritative timetable ingestion if a full stop-by-stop source becomes available, then add algorithm comparison views for ILP/MILP baseline versus heuristic allocation.
 
 ## 10) Updates to This File (append-only)
 - 2026-05-02T10:41:20Z: Created the continuity record with request framing, acceptance criteria, plan, risks, and the first decision log.
 - 2026-05-02T11:06:24Z: Completed and verified the simulation slice; updated evidence, progress state, issue resolution, remaining risks, and next-session plan.
+- 2026-05-02T11:17:49Z: Added diversified route generation, scalable scheduled services, full booking options, coverage dashboard charts, and diversity/scale regression tests after user reported route clustering.

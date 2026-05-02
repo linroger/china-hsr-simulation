@@ -39,3 +39,22 @@ test('booking engine returns ticket details and mutates interval availability', 
   assert.equal(sameTrain.inventory.isSeatAvailable(seatId, 1, 3), false);
   assert.equal(sameTrain.inventory.isSeatAvailable(seatId, 2, 3), true);
 });
+
+test('engine creates scalable scheduled services and full booking options', () => {
+  const routes = Array.from({ length: 20 }, (_, index) => ({
+    ...route,
+    id: `r${index}`,
+    code: `G${index + 1}`,
+    origin: `A${index}`,
+    destination: `D${index}`,
+    corridor: index % 2 ? 'East China / North China' : 'South China / Southwest China',
+    originProvince: index % 2 ? '北京' : '广东',
+    destinationProvince: index % 2 ? '上海' : '四川',
+  }));
+  const engine = new SimulationEngine({ routes, seed: 2, maxTrains: 30 });
+  const snapshot = engine.snapshot();
+
+  assert.equal(engine.trains.length, 30);
+  assert.equal(snapshot.bookingOptions.length, 30);
+  assert.ok(snapshot.network.corridors.length >= 2);
+});

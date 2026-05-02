@@ -11,8 +11,8 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
       <section className="metric-grid">
         <Metric icon={<CircleDollarSign />} label="Revenue" value={`¥${Math.round(snapshot.stats.totalRevenue).toLocaleString()}`} />
         <Metric icon={<Users />} label="Passengers booked" value={snapshot.stats.totalPassengers.toLocaleString()} />
-        <Metric icon={<TrainFront />} label="Active trains" value={trains.filter((train) => train.status === 'running').length} />
-        <Metric icon={<Timer />} label="Rejected requests" value={snapshot.stats.rejectedBookings} />
+        <Metric icon={<TrainFront />} label="Active / total trains" value={`${snapshot.stats.activeTrains || 0}/${snapshot.stats.trainCount || trains.length}`} />
+        <Metric icon={<Timer />} label="Visible on map" value={snapshot.stats.visibleTrainCount || trains.length} />
       </section>
 
       <section className="control-strip">
@@ -44,6 +44,34 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
               <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
               <Line type="monotone" dataKey="revenue" stroke="#f59e0b" strokeWidth={3} dot={false} />
             </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section className="chart-grid">
+        <div className="panel">
+          <h2>Corridor Coverage</h2>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={(snapshot.network?.corridors || []).slice(0, 14)}>
+              <CartesianGrid stroke="rgba(148,163,184,.12)" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: '#8ea3bd', fontSize: 10 }} interval={0} angle={-28} textAnchor="end" height={70} />
+              <YAxis tick={{ fill: '#8ea3bd', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
+              <Bar dataKey="trains" fill="#22c55e" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="active" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="panel">
+          <h2>Origin Province Coverage</h2>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={(snapshot.network?.originProvinces || []).slice(0, 16)}>
+              <CartesianGrid stroke="rgba(148,163,184,.12)" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: '#8ea3bd', fontSize: 10 }} interval={0} angle={-28} textAnchor="end" height={70} />
+              <YAxis tick={{ fill: '#8ea3bd', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
+              <Bar dataKey="trains" fill="#38bdf8" radius={[4, 4, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </section>

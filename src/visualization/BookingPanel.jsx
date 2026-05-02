@@ -8,7 +8,7 @@ const CLASS_LABELS = {
 };
 
 export default function BookingPanel({ snapshot, engine, onSnapshot }) {
-  const trains = snapshot.trains.filter((train) => train.stops.length >= 2);
+  const trains = (snapshot.bookingOptions || snapshot.trains).filter((train) => train.stops.length >= 2);
   const [trainId, setTrainId] = useState(trains[0]?.id || '');
   const selectedTrain = trains.find((train) => train.id === trainId) || trains[0];
   const [originIndex, setOriginIndex] = useState(0);
@@ -57,8 +57,8 @@ export default function BookingPanel({ snapshot, engine, onSnapshot }) {
 
         <label>Train</label>
         <select value={selectedTrain?.id || ''} onChange={(event) => handleTrainChange(event.target.value)}>
-          {trains.slice(0, 120).map((train) => (
-            <option key={train.id} value={train.id}>{train.code} · {train.origin} to {train.destination}</option>
+          {trains.map((train) => (
+            <option key={train.id} value={train.id}>{train.code} · {train.origin} to {train.destination} · {train.corridor}</option>
           ))}
         </select>
 

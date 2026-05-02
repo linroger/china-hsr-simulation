@@ -71,7 +71,7 @@ export default function App() {
           <TrainFront size={28} />
           <div>
             <h1>China HSR Simulation</h1>
-            <p>{snapshot.trains.length} trains · {snapshot.stats.totalBookings} bookings · ¥{Math.round(snapshot.stats.totalRevenue).toLocaleString()}</p>
+            <p>{snapshot.stats.trainCount || snapshot.trains.length} trains · {snapshot.stats.activeTrains || 0} active · {snapshot.stats.totalBookings} bookings · ¥{Math.round(snapshot.stats.totalRevenue).toLocaleString()}</p>
           </div>
         </div>
         <nav className="view-tabs" aria-label="Simulation views">

@@ -3,36 +3,58 @@ import { priceQuote, reconcileDemandForecast } from '../algorithms/pricing.js';
 import { haversineKm, interpolateCoord } from './geo.js';
 
 const DEFAULT_SPEED_KMH = 285;
+const DEFAULT_MAX_TRAINS = 1500;
+const SNAPSHOT_TRAIN_LIMIT = 700;
 
 export class SimulationEngine {
-  constructor({ stations = [], routes = [], seed = 20260502 } = {}) {
+  constructor({ stations = [], routes = [], seed = 20260502, maxTrains = DEFAULT_MAX_TRAINS } = {}) {
     this.seed = seed;
     this.stations = stations;
     this.routes = routes;
-    this.trains = routes.slice(0, 120).map((route, index) => this.createTrain(route, index));
+    this.trains = this.createScheduledServices(routes, maxTrains);
+    this.trainById = new Map(this.trains.map((train) => [train.id, train]));
     this.bookings = [];
     this.events = [];
-    this.nowMinutes = 6 * 60;
+    this.nowMinutes = 8 * 60 + 20;
     this.running = false;
     this.speed = 10;
     this.callbacks = { onUpdate: null };
-    this.stats = { totalRevenue: 0, totalBookings: 0, rejectedBookings: 0, totalPassengers: 0 };
+    this.stats = { totalRevenue: 0, totalBookings: 0, rejectedBookings: 0, totalPassengers: 0, trainCount: this.trains.length };
     this.preloadDemand();
+    this.tick(0);
   }
 
-  createTrain(route, index) {
+  createScheduledServices(routes, maxTrains) {
+    if (!routes.length) return [];
+    const trains = [];
+    const serviceCount = Math.min(maxTrains, Math.max(routes.length, Math.ceil(routes.length * 1.5)));
+    for (let index = 0; index < serviceCount; index += 1) {
+      const route = routes[index % routes.length];
+      const cycle = Math.floor(index / routes.length);
+      trains.push(this.createTrain(route, index, cycle));
+    }
+    return trains;
+  }
+
+  createTrain(route, index, cycle = 0) {
     const inventory = new SeatInventory(route.stops);
-    const departureMinute = 6 * 60 + (index % 48) * 12;
+    const departureMinute = scheduledDepartureMinute(route, index, cycle);
     const segmentMinutes = route.segments.map((segment) => Math.max(8, Math.round((segment.distanceKm / DEFAULT_SPEED_KMH) * 60 + 3)));
+    const serviceSuffix = cycle > 0 ? `-${cycle + 1}` : '';
     return {
-      id: route.id,
-      code: route.code,
+      id: `${route.id}${serviceSuffix}`,
+      routeId: route.id,
+      code: cycle > 0 ? `${route.code}.${cycle + 1}` : route.code,
       type: route.type,
       origin: route.origin,
       destination: route.destination,
+      originProvince: route.originProvince,
+      destinationProvince: route.destinationProvince,
+      corridor: route.corridor,
       stops: route.stops,
       segments: route.segments,
       totalDistanceKm: route.totalDistanceKm,
+      frequencyRank: route.frequencyRank,
       inventory,
       departureMinute,
       segmentMinutes,
@@ -46,8 +68,9 @@ export class SimulationEngine {
   }
 
   preloadDemand() {
-    for (const train of this.trains.slice(0, 40)) {
-      const attempts = 10 + (hashCode(train.code) % 25);
+    for (const train of this.trains) {
+      const demandIntensity = train.frequencyRank > 0.5 ? 1.2 : train.corridor?.includes('North China') || train.corridor?.includes('East China') ? 1.05 : 0.82;
+      const attempts = Math.max(4, Math.round((6 + (Math.abs(hashCode(train.id)) % 18)) * demandIntensity));
       for (let i = 0; i < attempts; i += 1) {
         const originIndex = Math.floor(this.random(train.id, i) * Math.max(1, train.stops.length - 2));
         const maxDest = train.stops.length - 1;
@@ -223,7 +246,7 @@ export class SimulationEngine {
   }
 
   getTrain(trainId) {
-    const train = this.trains.find((item) => item.id === trainId);
+    const train = this.trainById.get(trainId);
     if (!train) throw new Error(`Unknown train: ${trainId}`);
     return train;
   }
@@ -234,18 +257,85 @@ export class SimulationEngine {
   }
 
   snapshot() {
+    const serialized = this.trains.map((train) => serializeTrain(train, this.nowMinutes));
+    const visibleTrains = selectVisibleTrains(serialized, SNAPSHOT_TRAIN_LIMIT);
     return {
       nowMinutes: Math.round(this.nowMinutes),
-      stats: { ...this.stats },
+      stats: {
+        ...this.stats,
+        activeTrains: serialized.filter((train) => train.status === 'running').length,
+        scheduledTrains: serialized.filter((train) => train.status === 'scheduled').length,
+        completedTrains: serialized.filter((train) => train.status === 'completed').length,
+        visibleTrainCount: visibleTrains.length,
+      },
       bookings: this.bookings.slice(-12).reverse(),
       events: this.events,
-      trains: this.trains.map((train) => serializeTrain(train, this.nowMinutes)),
+      trains: visibleTrains,
+      bookingOptions: this.trains.map((train) => ({
+        id: train.id,
+        code: train.code,
+        routeId: train.routeId,
+        origin: train.origin,
+        destination: train.destination,
+        corridor: train.corridor,
+        originProvince: train.originProvince,
+        destinationProvince: train.destinationProvince,
+        stops: train.stops.map((stop, index) => ({ ...stop, index })),
+        departureMinute: train.departureMinute,
+        totalDistanceKm: train.totalDistanceKm,
+      })),
+      network: networkSummary(serialized),
     };
   }
 
   random(...parts) {
     return seeded(`${this.seed}:${parts.join(':')}`);
   }
+}
+
+function scheduledDepartureMinute(route, index, cycle) {
+  const hash = Math.abs(hashCode(`${route.id}:${route.code}`));
+  const trunkBias = route.frequencyRank > 0.55 ? -35 : route.frequencyRank > 0.25 ? -10 : 12;
+  const windowStart = 5 * 60 + 20;
+  const windowMinutes = 15 * 60;
+  const offset = (hash * 7 + index * 11 + cycle * 137) % windowMinutes;
+  return windowStart + offset + trunkBias;
+}
+
+function selectVisibleTrains(trains, limit) {
+  const active = trains.filter((train) => train.status === 'running');
+  const scheduled = trains.filter((train) => train.status === 'scheduled' && train.minutesToDeparture <= 120);
+  const completed = trains.filter((train) => train.status === 'completed').slice(-60);
+  return [...active, ...scheduled, ...completed]
+    .sort((a, b) => statusRank(a.status) - statusRank(b.status) || Math.abs(a.minutesToDeparture) - Math.abs(b.minutesToDeparture))
+    .slice(0, limit);
+}
+
+function statusRank(status) {
+  if (status === 'running') return 0;
+  if (status === 'scheduled') return 1;
+  return 2;
+}
+
+function networkSummary(trains) {
+  const byCorridor = new Map();
+  const byProvince = new Map();
+  for (const train of trains) {
+    increment(byCorridor, train.corridor || 'Unknown', train);
+    increment(byProvince, train.originProvince || 'Unknown', train);
+  }
+  return {
+    corridors: [...byCorridor.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
+    originProvinces: [...byProvince.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
+  };
+}
+
+function increment(map, key, train) {
+  if (!map.has(key)) map.set(key, { trains: 0, active: 0, passengers: 0 });
+  const value = map.get(key);
+  value.trains += 1;
+  if (train.status === 'running') value.active += 1;
+  value.passengers += train.passengerCount || 0;
 }
 
 function serializeTrain(train, nowMinutes) {
@@ -260,6 +350,9 @@ function serializeTrain(train, nowMinutes) {
     type: train.type,
     origin: train.origin,
     destination: train.destination,
+    originProvince: train.originProvince,
+    destinationProvince: train.destinationProvince,
+    corridor: train.corridor,
     currentStation: from.name,
     nextStation: to.name,
     coords,
