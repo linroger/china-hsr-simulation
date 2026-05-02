@@ -13,6 +13,8 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
         <Metric icon={<Users />} label="Passengers booked" value={snapshot.stats.totalPassengers.toLocaleString()} />
         <Metric icon={<TrainFront />} label="Active / total trains" value={`${snapshot.stats.activeTrains || 0}/${snapshot.stats.trainCount || trains.length}`} />
         <Metric icon={<Timer />} label="Visible on map" value={snapshot.stats.visibleTrainCount || trains.length} />
+        <Metric icon={<Timer />} label="Avg delay" value={`${snapshot.stats.averageDelayMinutes || 0} min`} />
+        <Metric icon={<Users />} label="No-show releases" value={snapshot.stats.noShows || 0} />
       </section>
 
       <section className="control-strip">
@@ -45,6 +47,31 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
               <Line type="monotone" dataKey="revenue" stroke="#f59e0b" strokeWidth={3} dot={false} />
             </LineChart>
           </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section className="chart-grid">
+        <div className="panel">
+          <h2>Station Platform Pressure</h2>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={(snapshot.network?.stationHotspots || []).slice(0, 14)}>
+              <CartesianGrid stroke="rgba(148,163,184,.12)" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: '#8ea3bd', fontSize: 10 }} interval={0} angle={-28} textAnchor="end" height={70} />
+              <YAxis tick={{ fill: '#8ea3bd', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
+              <Bar dataKey="active" fill="#f97316" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="passengers" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="panel">
+          <h2>Operational Realism</h2>
+          <div className="realism-grid">
+            <Realism label="Station stops processed" value={snapshot.stats.stationStops || 0} />
+            <Realism label="Delayed trains >= 5 min" value={snapshot.stats.delayedTrains || 0} />
+            <Realism label="No-show seats released" value={snapshot.stats.noShows || 0} />
+            <Realism label="Map render cap" value={snapshot.stats.visibleTrainCount || trains.length} />
+          </div>
         </div>
       </section>
 
@@ -99,6 +126,15 @@ function Metric({ icon, label, value }) {
       {icon}
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function Realism({ label, value }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <b>{value}</b>
     </div>
   );
 }

@@ -24,6 +24,12 @@ Files touched: scripts/prepare-data.cjs, src/simulation_core/SimulationEngine.js
 Tests run: `npm run prepare:data` (3058 stations, 7278 HSR records, 1200 simulation routes, 85 origins, 27 corridors, 2200 rail features); full-engine scale probe (1500 trains, 170 active, 389 visible, 1500 booking options, 27 corridors, 27 origin provinces); `npm test` (5/5 passing); `npm run build` (passing with Mapbox bundle-size warning only); `./init.sh` (complete).
 Result: Passing. The map now receives active and near-term services from a diversified nationwide network instead of the first few CSV corridors, and the booking UI can book across the full scheduled train set.
 
+2026-05-02T15:02:00Z | branch: main
+Feature/bug worked on: Fix refused local connection and add operational realism.
+Files touched: package.json, README.md, scripts/serve-static.cjs, src/simulation_core/SimulationEngine.js, src/visualization/Dashboard.jsx, src/styles/app.css, tests/engine.test.mjs, handoff.md, agent-progress.txt.
+Tests run: `npm test` (6/6 passing); `npm run build` (passing with Mapbox bundle-size warning only); `./init.sh` (complete); `curl -I http://127.0.0.1:5174/` (HTTP 200); `launchctl print gui/$(id -u)/com.codex.china-hsr-simulation` (state running, PID 22517); full-engine scale probe (1500 trains, 181 active, 400 visible, 67 no-show releases, 7.8 min average delay, 1124 delayed trains, 16 station hotspots).
+Result: Passing. The site is reachable at the in-app browser URL through a launchctl-managed static server, and the simulation now models no-show releases, delay pressure, and station platform congestion.
+
 Next steps:
 1. Improve realism by adding an authoritative full timetable source if available.
 2. Add a dedicated algorithm comparison page for exact small-instance optimization versus the production heuristic.

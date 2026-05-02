@@ -57,4 +57,26 @@ test('engine creates scalable scheduled services and full booking options', () =
   assert.equal(engine.trains.length, 30);
   assert.equal(snapshot.bookingOptions.length, 30);
   assert.ok(snapshot.network.corridors.length >= 2);
+  assert.ok(snapshot.stats.averageDelayMinutes > 0);
+});
+
+test('no-show passengers release their seat inventory after departure', () => {
+  const engine = new SimulationEngine({ routes: [route], seed: 3, maxTrains: 1 });
+  const train = engine.getTrain('r1');
+  train.departureMinute = engine.nowMinutes - 1;
+  train.status = 'scheduled';
+  train.processedStationIndexes = new Set();
+
+  const response = engine.bookTrip({ trainId: 'r1', originIndex: 0, destinationIndex: 2, seatClass: 'secondClass', passengerName: 'No Show' });
+  assert.equal(response.ok, true);
+  response.booking.noShow = true;
+
+  const seatId = response.booking.seats[0].seatId;
+  assert.equal(train.inventory.isSeatAvailable(seatId, 0, 2), false);
+
+  engine.updateTrain(train);
+
+  assert.equal(response.booking.status, 'noShow');
+  assert.equal(train.inventory.isSeatAvailable(seatId, 0, 2), true);
+  assert.equal(engine.stats.noShows >= 1, true);
 });

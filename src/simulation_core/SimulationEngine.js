@@ -19,7 +19,7 @@ export class SimulationEngine {
     this.running = false;
     this.speed = 10;
     this.callbacks = { onUpdate: null };
-    this.stats = { totalRevenue: 0, totalBookings: 0, rejectedBookings: 0, totalPassengers: 0, trainCount: this.trains.length };
+    this.stats = { totalRevenue: 0, totalBookings: 0, rejectedBookings: 0, totalPassengers: 0, noShows: 0, stationStops: 0, trainCount: this.trains.length };
     this.preloadDemand();
     this.tick(0);
   }
@@ -39,8 +39,10 @@ export class SimulationEngine {
   createTrain(route, index, cycle = 0) {
     const inventory = new SeatInventory(route.stops);
     const departureMinute = scheduledDepartureMinute(route, index, cycle);
-    const segmentMinutes = route.segments.map((segment) => Math.max(8, Math.round((segment.distanceKm / DEFAULT_SPEED_KMH) * 60 + 3)));
+    const plannedRuntimes = route.segments.map((segment, segmentIndex) => plannedSegmentMinutes(route, segment, segmentIndex));
+    const segmentMinutes = route.segments.map((segment, segmentIndex) => realisticSegmentMinutes(route, segment, segmentIndex, index, cycle));
     const serviceSuffix = cycle > 0 ? `-${cycle + 1}` : '';
+    const delayMinutes = Math.max(0, Math.round(segmentMinutes.reduce((sum, minutes) => sum + minutes, 0) - plannedRuntimes.reduce((sum, minutes) => sum + minutes, 0)));
     return {
       id: `${route.id}${serviceSuffix}`,
       routeId: route.id,
@@ -58,9 +60,12 @@ export class SimulationEngine {
       inventory,
       departureMinute,
       segmentMinutes,
+      plannedSegmentMinutes: plannedRuntimes,
+      delayMinutes,
       status: 'scheduled',
       currentSegmentIndex: 0,
       segmentProgress: 0,
+      processedStationIndexes: new Set(),
       completed: false,
       bookings: [],
       algorithmMetrics: [],
@@ -118,7 +123,9 @@ export class SimulationEngine {
   updateTrain(train) {
     if (train.completed) return;
     if (this.nowMinutes < train.departureMinute) return;
+    const wasScheduled = train.status === 'scheduled';
     train.status = 'running';
+    if (wasScheduled) this.processStation(train, 0);
     let elapsed = this.nowMinutes - train.departureMinute;
     let segmentIndex = 0;
     while (segmentIndex < train.segmentMinutes.length && elapsed > train.segmentMinutes[segmentIndex]) {
@@ -134,13 +141,39 @@ export class SimulationEngine {
       return;
     }
     if (segmentIndex !== train.currentSegmentIndex) {
-      const station = train.stops[segmentIndex]?.name;
-      const alighting = train.bookings.filter((booking) => booking.destinationIndex === segmentIndex).length;
-      const boarding = train.bookings.filter((booking) => booking.originIndex === segmentIndex).length;
-      this.logEvent('station', `${train.code} stopped at ${station}: ${boarding} boarding, ${alighting} alighting.`);
+      this.processStation(train, segmentIndex);
     }
     train.currentSegmentIndex = segmentIndex;
     train.segmentProgress = elapsed / train.segmentMinutes[segmentIndex];
+  }
+
+  processStation(train, stationIndex) {
+    if (train.processedStationIndexes.has(stationIndex)) return;
+    train.processedStationIndexes.add(stationIndex);
+    const station = train.stops[stationIndex]?.name;
+    let boarding = 0;
+    let alighting = 0;
+    let noShows = 0;
+    for (const booking of train.bookings) {
+      const seatCount = booking.seats?.length || 1;
+      if (booking.originIndex === stationIndex && booking.status === 'confirmed') {
+        if (booking.noShow) {
+          train.inventory.releaseTicket(booking.ticketId);
+          booking.status = 'noShow';
+          noShows += seatCount;
+          this.stats.noShows += seatCount;
+        } else {
+          booking.status = 'onboard';
+          boarding += seatCount;
+        }
+      }
+      if (booking.destinationIndex === stationIndex && booking.status === 'onboard') {
+        booking.status = 'completed';
+        alighting += seatCount;
+      }
+    }
+    this.stats.stationStops += 1;
+    this.logEvent('station', `${train.code} stopped at ${station}: ${boarding} boarded, ${alighting} alighted${noShows ? `, ${noShows} no-show release` : ''}.`);
   }
 
   quoteTrip({ trainId, originIndex, destinationIndex, seatClass = 'secondClass', groupSize = 1 }) {
@@ -224,6 +257,8 @@ export class SimulationEngine {
       price: quote.pricing.price * groupSize,
       distanceKm: quote.distanceKm,
       bookedAtMinute: this.nowMinutes,
+      status: 'confirmed',
+      noShow: this.random(trainId, originIndex, destinationIndex, this.stats.totalBookings, 'noShow') < noShowProbability(train, originIndex, seatClass),
     };
     train.bookings.push(booking);
     this.bookings.push(booking);
@@ -267,6 +302,8 @@ export class SimulationEngine {
         scheduledTrains: serialized.filter((train) => train.status === 'scheduled').length,
         completedTrains: serialized.filter((train) => train.status === 'completed').length,
         visibleTrainCount: visibleTrains.length,
+        averageDelayMinutes: average(serialized.map((train) => train.delayMinutes || 0)),
+        delayedTrains: serialized.filter((train) => (train.delayMinutes || 0) >= 5).length,
       },
       bookings: this.bookings.slice(-12).reverse(),
       events: this.events,
@@ -291,6 +328,29 @@ export class SimulationEngine {
   random(...parts) {
     return seeded(`${this.seed}:${parts.join(':')}`);
   }
+}
+
+function plannedSegmentMinutes(route, segment, segmentIndex) {
+  const dwell = route.stops[segmentIndex + 1]?.dwellMinutes || 2;
+  const speed = Math.min(segment.speedLimitKmh || DEFAULT_SPEED_KMH, DEFAULT_SPEED_KMH);
+  return Math.max(8, Math.round((segment.distanceKm / speed) * 60 + dwell));
+}
+
+function realisticSegmentMinutes(route, segment, segmentIndex, trainIndex, cycle) {
+  const planned = plannedSegmentMinutes(route, segment, segmentIndex);
+  const nextStop = route.stops[segmentIndex + 1];
+  const hubPressure = nextStop?.tier === 'national-hub' ? 3 : nextStop?.tier === 'regional-hub' ? 1.5 : 0.4;
+  const weatherDrag = deterministicNoise(`${route.id}:${trainIndex}:${cycle}:${segmentIndex}:weather`) > 0.94 ? 4 : 0;
+  const dispatchSlack = deterministicNoise(`${route.id}:${trainIndex}:${cycle}:${segmentIndex}:dispatch`) > 0.86 ? 2 : 0;
+  return Math.round(planned + hubPressure + weatherDrag + dispatchSlack);
+}
+
+function noShowProbability(train, originIndex, seatClass) {
+  const station = train.stops[originIndex];
+  const base = seatClass === 'business' ? 0.018 : seatClass === 'firstClass' ? 0.026 : 0.038;
+  const hubAdjustment = station?.tier === 'national-hub' ? -0.006 : station?.tier === 'local' ? 0.008 : 0;
+  const shortHopAdjustment = train.stops.length <= 4 ? 0.006 : 0;
+  return Math.max(0.01, Math.min(0.08, base + hubAdjustment + shortHopAdjustment));
 }
 
 function scheduledDepartureMinute(route, index, cycle) {
@@ -320,13 +380,16 @@ function statusRank(status) {
 function networkSummary(trains) {
   const byCorridor = new Map();
   const byProvince = new Map();
+  const byStation = new Map();
   for (const train of trains) {
     increment(byCorridor, train.corridor || 'Unknown', train);
     increment(byProvince, train.originProvince || 'Unknown', train);
+    if (train.status === 'running') increment(byStation, train.currentStation || 'Unknown', train);
   }
   return {
     corridors: [...byCorridor.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
     originProvinces: [...byProvince.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
+    stationHotspots: [...byStation.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.active - a.active || b.passengers - a.passengers).slice(0, 16),
   };
 }
 
@@ -367,8 +430,14 @@ function serializeTrain(train, nowMinutes) {
     stops: train.stops.map((stop, index) => ({ ...stop, index })),
     totalDistanceKm: train.totalDistanceKm,
     departureMinute: train.departureMinute,
+    delayMinutes: train.delayMinutes,
     minutesToDeparture: Math.round(train.departureMinute - nowMinutes),
   };
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
 }
 
 function distanceBetween(train, originIndex, destinationIndex) {
@@ -396,4 +465,8 @@ function seeded(key) {
     hash = Math.imul(hash, 16777619);
   }
   return ((hash >>> 0) % 1000000) / 1000000;
+}
+
+function deterministicNoise(key) {
+  return seeded(`noise:${key}`);
 }

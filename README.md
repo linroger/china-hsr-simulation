@@ -20,7 +20,7 @@ Do not put Mapbox secret tokens in this app. The browser uses a public token. Yo
 ```bash
 npm install
 ./init.sh
-npm run dev
+npm run serve
 ```
 
 Quality gates:
@@ -30,6 +30,17 @@ npm test
 npm run build
 npm run verify
 ```
+
+The stable local browser URL is `http://127.0.0.1:5174/`. `npm run serve` serves the verified production bundle from `dist/`; `npm run dev` is still available for HMR development on the same fixed port.
+
+If the in-app browser says the site refused to connect, the app server is not running. Rebuild and serve it with:
+
+```bash
+npm run build
+npm run serve
+```
+
+For this local desktop session the server was also submitted to `launchctl` under `com.codex.china-hsr-simulation`, so `http://127.0.0.1:5174/` stays reachable outside the transient shell command.
 
 ## Booking Model
 
