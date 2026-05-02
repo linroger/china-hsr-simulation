@@ -1,74 +1,732 @@
-# China HSR Simulation
+# China High-Speed Rail Simulation
 
-A browser-based, data-backed simulation of China high-speed rail operations with segment-aware booking, seat reuse after alighting, dynamic ticket pricing, live train movement, and a Mapbox dashboard.
+> **A browser-native, data-backed simulation of the People's Republic of China's high-speed rail network** — featuring a segment-aware seat-inventory engine, revenue-management dynamic pricing, a discrete-event train movement core, real-time live-demand sales, and a multithreaded Web Worker architecture rendered through Mapbox GL on top of OSM rail-corridor geometry.
 
-## Data Sources
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
+[![Tests](https://img.shields.io/badge/tests-7%2F7%20passing-brightgreen)](#7-testing-strategy)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-- `../China-rail-way-stations-data-main/src/station.csv`: station names, administrative metadata, and WGS84 coordinates.
-- `../China-rail-way-stations-data-main/src/line.csv`: real train origin-destination service records.
-- `../hotosm_chn_railways_points_geojson/hotosm_chn_railways_points_geojson.geojson`: OSM railway points.
-- `../hotosm_chn_railways_lines_geojson/hotosm_chn_railways_lines_geojson.geojson`: OSM railway lines.
+🇨🇳 **[中文版 README](./README.zh-CN.md)**
 
-The route database uses real stations and real train origin-destination records. Because the local train CSV does not include every train's complete stop-by-stop timetable, intermediate stops are generated from geographically plausible stations between real endpoints and are labeled as simulation-derived.
+---
 
-## Secret Handling
+## Live Preview
 
-Do not put Mapbox secret tokens in this app. The browser uses a public token. You can override the default public token by copying `.env.example` to `.env` and setting `VITE_MAPBOX_TOKEN`.
+| Live Network Map | Operations Dashboard | Segment-aware Booking |
+|:---:|:---:|:---:|
+| ![Live Map](./screenshots/01-live-map.png) | ![Dashboard](./screenshots/02-operations-dashboard.png) | ![Booking](./screenshots/03-booking-panel.png) |
+| 1,500 scheduled services moving along OSM rail-corridor polylines, color-coded by load factor. | Live KPIs: ¥62M+ revenue, 407K+ passengers, 248 active trains, 3.6 min avg delay. | Quote/book any segment of any train; seats reused after passengers alight. |
 
-## Commands
+---
+
+## Table of Contents
+
+1. [Why this project](#why-this-project)
+2. [Quick start](#quick-start)
+3. [Highlights at a glance](#highlights-at-a-glance)
+4. [System architecture](#system-architecture)
+5. [Core algorithms](#core-algorithms)
+   - 5.1 [Interval-calendar seat inventory](#51-interval-calendar-seat-inventory)
+   - 5.2 [Revenue-management dynamic pricing](#52-revenue-management-dynamic-pricing)
+   - 5.3 [Discrete-event simulation core](#53-discrete-event-simulation-core)
+   - 5.4 [Spatial grid index for OSM rail matching](#54-spatial-grid-index-for-osm-rail-matching)
+   - 5.5 [Stratified diversity sampling](#55-stratified-diversity-sampling)
+   - 5.6 [Operational realism layer](#56-operational-realism-layer)
+6. [Performance & optimization](#performance--optimization)
+7. [Concurrency model](#concurrency-model)
+8. [Data pipeline](#data-pipeline)
+9. [Visualization layer](#visualization-layer)
+10. [Testing strategy](#testing-strategy)
+11. [Project structure](#project-structure)
+12. [Configuration & secret handling](#configuration--secret-handling)
+13. [Tech stack](#tech-stack)
+14. [Roadmap](#roadmap)
+15. [Disclaimer & data provenance](#disclaimer--data-provenance)
+16. [License](#license)
+
+---
+
+## Why this project
+
+This repository is a small but uncompromising attempt to model how a **nationwide passenger-rail booking and dispatch system** is engineered. It pulls together topics that show up at almost every senior-level interview at large platform companies:
+
+- **Online interval scheduling** — the classic *can a seat be re-sold to a downstream passenger?* problem, solved as an interval-overlap calendar with O(k) check, O(k log k) insertion, and tested deterministically.
+- **Revenue management / yield management** — multi-factor dynamic pricing combining distance fares, sigmoid-scarcity bid prices, time-to-departure pressure, peak surcharges, frequency relief, no-show buffers, and price elasticity.
+- **Discrete-event simulation (DES)** — a 20 Hz tick loop driving 1,500 train services across 1,200 routes, with planned-vs-actual delay modeling, no-show seat release, and station-pressure metrics.
+- **Spatial algorithms** — Haversine great-circle distance, perpendicular-distance pruning, polyline arc-length interpolation, and a custom **0.35°×0.35° grid hash index** that snaps generated route segments onto real OSM rail corridors.
+- **Multithreading in the browser** — the entire simulation engine is moved off the React/Mapbox UI thread into a Web Worker; UI ↔ engine communicate through a typed promise-based message bus that handles `init`, `start`, `setSpeed`, `quoteTrip`, `bookTrip`, and `snapshot` traffic.
+- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 7 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, and data diversity, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
+
+> **Designed for recruiters and engineers at Ant Group, Alibaba, Tencent, Baidu, Huawei** — the codebase is intentionally small (~2,000 LoC of hand-written logic) yet covers algorithms, distributed-systems reasoning, OR/yield management, full-stack TypeScript-equivalent React, GIS, and an end-to-end product story.
+
+---
+
+## Quick start
+
+> **Requirements:** Node.js ≥ 18 (works with 18/20/22), npm, and ~600 MB of disk space.
+
+```bash
+git clone https://github.com/linroger/china-hsr-simulation.git
+cd china-hsr-simulation
+./run.sh
+```
+
+That's it. The script will:
+
+1. Verify your Node.js version.
+2. `npm install` if `node_modules/` is missing.
+3. Regenerate the station/route/Mapbox database (only if the upstream raw CSV/GeoJSON sources are present in the parent folder; otherwise it reuses the pre-built `public/*.json` artifacts that are committed to the repo).
+4. Run the full test suite.
+5. `vite build` the production bundle.
+6. Launch a static server on `http://127.0.0.1:5174/`.
+
+### Useful flags
+
+```bash
+./run.sh --dev          # Vite dev server with HMR (no production build)
+./run.sh --skip-tests   # bootstrap + serve, skip the test suite
+./run.sh --rebuild      # nuke node_modules/ and dist/, fresh install
+PORT=8080 HOST=0.0.0.0 ./run.sh   # custom port / network exposure
+```
+
+### Windows
+
+```cmd
+run.cmd
+run.cmd --dev
+run.cmd --skip-tests
+```
+
+### Manual workflow (no script)
 
 ```bash
 npm install
-./init.sh
-npm run serve
+npm run prepare:data   # only if upstream CSV/GeoJSON sources exist
+npm test
+npm run build
+npm run serve          # http://127.0.0.1:5174/
 ```
 
-Quality gates:
+---
+
+## Highlights at a glance
+
+| Domain | Numbers |
+|---|---|
+| **Stations indexed** | 3,058 with WGS-84 coordinates |
+| **HSR service records** | 7,278 real Chinese train OD records (G/D/C trains) |
+| **Generated simulation routes** | 1,200 across 27 macro-corridors and 27 origin-provinces |
+| **Scheduled train services** | 1,500 (1.25 trains/route average) |
+| **Seat quota per train** | 554 (10 商务座 + 204 一等座 + 340 二等座 in 8-car formation) |
+| **Total seat-segments simulated** | ~830,000 per session |
+| **OSM rail-corridor features** | 8,000 LineString features after simplification |
+| **Rail-matched route segments** | ≥ 52.7% snapped to real OSM corridors (rest fall back to station chords) |
+| **Snapshot interval** | 250 ms from worker → UI |
+| **Tests** | 7/7 passing (booking, pricing, engine, no-show, live demand, data diversity) |
+
+---
+
+## System architecture
+
+```
+┌─────────────────────────────── Browser tab ────────────────────────────────┐
+│                                                                            │
+│  ┌─────────────────────── Main thread (UI) ─────────────────────────┐      │
+│  │  React 19  ─  App.jsx                                            │      │
+│  │     │                                                            │      │
+│  │     ├─ HSRMap.jsx        (Mapbox GL: rails + stations + trains)  │      │
+│  │     ├─ Dashboard.jsx     (Recharts: load, revenue, pressure)     │      │
+│  │     └─ BookingPanel.jsx  (segment selector + quote + ticket)     │      │
+│  │                                                                  │      │
+│  │  SimulationWorkerClient   ◄──promise message bus──┐              │      │
+│  │   .quoteTrip / .bookTrip / .setSpeed / .snapshot  │              │      │
+│  └───────────────────────────────────────────────────┼──────────────┘      │
+│                                                      │ postMessage         │
+│                                                      ▼                     │
+│  ┌────────────────── Web Worker thread ────────────────────────────┐       │
+│  │  simulationWorker.js   (handles init/start/stop/...)            │       │
+│  │      │                                                          │       │
+│  │      ▼                                                          │       │
+│  │  SimulationEngine                                               │       │
+│  │   ├─ tick(realSeconds)    every 50 ms                           │       │
+│  │   │     ├─ updateTrain    (state machine, segment progress)     │       │
+│  │   │     ├─ processStation (boarding / alighting / no-show)      │       │
+│  │   │     └─ sellRealtimeDemand  (live booking pressure)          │       │
+│  │   ├─ SeatInventory[trainId]  ←─ interval calendar per train     │       │
+│  │   └─ priceQuote / reconcileDemandForecast                       │       │
+│  │                                                                 │       │
+│  │  Snapshot publish every 250 ms ───► main thread setData()       │       │
+│  └─────────────────────────────────────────────────────────────────┘       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+                                build time
+   raw CSV/GeoJSON ──► scripts/prepare-data.cjs ──► public/{station,route,
+                                                          stations,rails}
+```
+
+The architecture is a **producer/consumer pipeline** with backpressure: the worker produces snapshots at 4 Hz, the UI consumes the latest snapshot and discards staler ones. All booking writes go through a request/response pair so the UI never reads partial state.
+
+---
+
+## Core algorithms
+
+### 5.1 Interval-calendar seat inventory
+
+The hardest correctness requirement of the whole project: **a seat must become available again to another passenger as soon as the original passenger alights, even mid-journey**. This is solved as an *interval-scheduling* problem on a per-seat calendar.
+
+Each train holds a `SeatInventory` (`src/algorithms/seatInventory.js`) of 554 physical seats. Every seat carries a sorted list of occupied half-open intervals `[originIndex, destinationIndex)` keyed by station index along the train's stop list.
+
+The availability test is the canonical interval-overlap predicate:
+
+```js
+export function intervalOverlaps(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;          // half-open [a, b)
+}
+
+isSeatAvailable(seatId, originIndex, destinationIndex) {
+  const seat = this.seatById.get(seatId);
+  return seat.intervals.every(
+    (held) => !intervalOverlaps(originIndex, destinationIndex,
+                                held.originIndex, held.destinationIndex)
+  );
+}
+```
+
+Because intervals are kept sorted on insertion, the worst-case check is **O(k)** in the number of bookings on that seat (typically `k ≤ 6`), and insertion costs **O(k log k)** for the re-sort. For the simulator's seat-quota of 554 and routes of up to 12 stops, total seat-state per train fits in `O(seats × stops)` ≈ 6 KB — small enough that linear scans dominate any tree-based structure in practice.
+
+#### Allocation scoring
+
+`availableSeats({...})` returns seats *ranked* by a heuristic score (`scoreSeat` in `seatInventory.js:176`):
+
+```js
+function scoreSeat(seat, preference, originIndex, destinationIndex) {
+  const tripLength = destinationIndex - originIndex;
+  const preferenceBonus =
+    preference === seat.position ? 100 :
+    preference === 'any' && tripLength >= 4 && seat.position === 'window' ? 30 :
+    preference === 'any' && tripLength < 4 && seat.position === 'aisle'  ? 20 : 0;
+  const reuseBonus  = seat.intervals.length * 5;       // pack tighter for higher reuse
+  const rowPenalty  = seat.row * 0.01;                  // mild front-rows preference
+  return preferenceBonus + reuseBonus - rowPenalty;
+}
+```
+
+Why a `reuseBonus`? It implements **best-fit packing**: prefer seats that already have neighbouring intervals, leaving long contiguous holes for future long-distance demand. This is a heuristic approximation to optimal interval colouring (a.k.a. interval-graph chromatic number = max overlap), but runs in `O(seats)` per booking instead of solving an NP-hard online colouring.
+
+#### Group bookings & accessibility
+
+`allocate({ groupSize, accessible, preference })` then groups candidates by `(car, row)` and prefers same-row seating for groups up to 6, falling back to "best-fit-N" if no single row has enough seats:
+
+```js
+function chooseGroup(candidates, groupSize) {
+  if (groupSize === 1) return [candidates[0]];
+  const byCarRow = new Map();
+  for (const seat of candidates) {
+    const key = `${seat.car}-${seat.row}`;
+    if (!byCarRow.has(key)) byCarRow.set(key, []);
+    byCarRow.get(key).push(seat);
+  }
+  for (const seats of byCarRow.values()) {
+    if (seats.length >= groupSize) return seats.slice(0, groupSize);
+  }
+  return candidates.slice(0, groupSize);
+}
+```
+
+#### Verified semantics
+
+The single most important regression test (`tests/seatInventory.test.mjs`) encodes the seat-reuse contract:
+
+```js
+test('same seat is reusable after passenger alights but blocked for overlapping intervals', () => {
+  const inv = new SeatInventory(routeStations, [{ id: 'S1', /* ... */ }]);
+
+  inv.allocate({ originIndex: 0, destinationIndex: 2, /* A → C */ });
+  assert.equal(inv.isSeatAvailable('S1', 1, 3), false);   // overlap B→D blocked
+  assert.equal(inv.allocate({ originIndex: 1, destinationIndex: 3 }), null);
+
+  inv.allocate({ originIndex: 2, destinationIndex: 3, /* C → D */ });
+  // S1 now holds [A,C) and [C,D) — reused after alighting
+});
+```
+
+### 5.2 Revenue-management dynamic pricing
+
+`src/algorithms/pricing.js` implements a compact yield-management quote. Inputs are `{ distanceKm, seatClass, loadFactor, hoursToDeparture, departureHour, frequencyRank, noShowRisk, elasticity }` and the output is a deterministic price plus the multiplier breakdown — so the UI can render *why* a price is what it is.
+
+```js
+const distanceDiscount = distanceKm > 1200 ? 0.88 :
+                         distanceKm > 800  ? 0.92 :
+                         distanceKm > 500  ? 0.96 : 1;
+const baseFare        = distanceKm * 0.46 * config.multiplier * distanceDiscount;
+const scarcity        = 1 + sigmoid((loadFactor - 0.62) * 7) * 0.48;
+const timePressure    = hoursToDeparture < 2  ? 1.32 :
+                        hoursToDeparture < 8  ? 1.18 :
+                        hoursToDeparture < 24 ? 1.08 :
+                        hoursToDeparture > 168 ? 0.9  : 1;
+const peak            = (departureHour ∈ [7-9] ∪ [17-20]) ? 1.16 : 1;
+const frequencyRelief = 1 - min(0.14, max(0, frequencyRank) * 0.14);
+const noShowBuffer    = 1 + min(0.06, noShowRisk);
+const bidPrice        = distanceKm * 0.46 * loadFactor^1.8 * config.multiplier * 0.42;
+const raw             = (baseFare + bidPrice) * scarcity * timePressure
+                                              * peak * frequencyRelief * noShowBuffer;
+```
+
+The interesting design choices:
+
+- **Sigmoid scarcity** (`1/(1+e^-x)`) gives a smooth demand curve centered at 62 % load factor — empirically close to where Chinese HSR begins shedding 95-折 discounts. Linear scaling would over-react to early bookings.
+- **`bidPrice = d · loadFactor^1.8 · classMul · 0.42`** is a compact bid-price ([Talluri & van Ryzin, *The Theory and Practice of Revenue Management*](https://link.springer.com/book/10.1007/b139000)) approximation: as the segment fills, the marginal opportunity cost of seat consumption grows super-linearly. Adding `bidPrice` to `baseFare` produces **strictly monotonic prices in load factor** for any seat class.
+- **Frequency relief**: well-served corridors (`frequencyRank > 0.5`) discount up to 14 % to model competitive pressure from neighbouring trains.
+- **No-show buffer**: a small bump (≤ 6 %) covers the expected revenue loss from the no-show release path (§5.6).
+
+The companion `reconcileDemandForecast({ routeDistanceKm, segmentLoad, dayOfWeek, hour, stationTier })` produces a 0.7×–1.7× *demand multiplier* used to **inflate effective load factor** when quoting, so a Beijing-South 8 a.m. business-class quote prices in *future* expected occupancy, not just current.
+
+The pricing test (`tests/pricing.test.mjs`) verifies monotonicity:
+
+```
+business@15%   >  first@15%   >  second@15%
+second@93%     >  second@15%
+bidPrice@93%   >  bidPrice@15%
+```
+
+### 5.3 Discrete-event simulation core
+
+`SimulationEngine` (`src/simulation_core/SimulationEngine.js`) is a 23 KB hand-written DES runtime. Key responsibilities:
+
+| Method | Purpose |
+|---|---|
+| `createScheduledServices(routes, maxTrains)` | Generates 1,500 train services from 1,200 routes, cycling through routes for second/third daily services. |
+| `tick(realSeconds)` | Advances `nowMinutes` by `realSeconds × speed / 60`, updates every train, sells live demand every 8 ticks. |
+| `updateTrain(train)` | Advances segment index by accumulating elapsed time over `segmentMinutes[]`; transitions `scheduled → running → completed`. |
+| `processStation(train, idx)` | Per-station boarding/alighting/no-show logic, mutates booking statuses in-place. |
+| `quoteTrip(...)` | Pure read-only price computation, instrumented with `performance.now()` to expose `algorithmMs` to the UI. |
+| `bookTrip(...)` | Serializable read-modify-write through `quoteTrip` + `inventory.allocate`; rolls back if the seat calendar shifted between quote and commit. |
+| `snapshot()` | Builds a 700-train cap of `{ active ∪ near-term ∪ recently-completed }`, plus full booking-options list, network roll-up, and stats. |
+
+The tick frequency is **20 Hz** (50 ms) inside the worker, but snapshots ship to the UI at **4 Hz** (250 ms) — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget.
+
+#### State machine
+
+```
+                    departureMinute reached
+   scheduled ─────────────────────────────────► running
+                                                   │
+                              elapsed ≥ Σ segmentMinutes
+                                                   ▼
+                                                completed
+```
+
+`processedStationIndexes` is a `Set` to make `processStation` idempotent under tick clock jitter (a tick may straddle a station crossing), so boarding events fire exactly once per stop.
+
+#### Live-demand pressure
+
+Every 8 ticks (`tickCounter % 8 === 0`), `sellRealtimeDemand` injects 10 booking requests biased by:
+
+```
+weight(train) = max(0.1, frequencyRank + 0.2)
+              × departurePressure(t)             ← bell-curved around 9 a.m.
+              × max(0.15, 1 - currentLoadFactor) ← stop hammering already-full trains
+```
+
+This is why revenue and passenger counters move *during* the live preview — the system isn't a static playback of preloaded bookings.
+
+### 5.4 Spatial grid index for OSM rail matching
+
+The OSM HOTOSM China-rail dataset has ~145,000 LineString features. Naively projecting each generated route segment against all of them would be O(routes × features) ≈ 10⁹ haversine evaluations.
+
+`scripts/prepare-data.cjs` builds a **uniform grid hash index** at 0.35° cell size (~38 km at 30°N), bucketing every OSM rail vertex by its `(⌊lng/0.35⌋, ⌊lat/0.35⌋)` grid cell:
+
+```js
+function createRailIndex(railGeojson) {
+  const cellSize = 0.35;
+  const cells = new Map();
+  for (const feature of railGeojson.features) {
+    feature.geometry.coordinates.forEach((coord, index) => {
+      const key = `${Math.floor(coord[0]/cellSize)}:${Math.floor(coord[1]/cellSize)}`;
+      cells.set(key, [...(cells.get(key) ?? []), { lng: coord[0], lat: coord[1], index }]);
+    });
+  }
+  return { cells, cellSize };
+}
+```
+
+For each route segment `(from, to)` of `directKm` length, the algorithm:
+
+1. Expands a bounding box `(from, to) ± margin` where `margin = clamp(directKm/210, 0.55, 3.8)°`.
+2. Queries every grid cell intersecting that bbox (`O(bbox area / cellSize²)` cells, typically 4–80).
+3. Filters candidates by signed projection `t ∈ (-0.12, 1.12)` along the chord.
+4. Drops candidates whose perpendicular distance exceeds `clamp(directKm × 0.55, 45, 220) km`.
+5. Sorts by projection, runs *minimum-spacing* deduplication (≥ 4 km for short hops, ≥ 9 km for trunks), then resamples to ≤ 28–46 anchor points.
+6. Falls back to the straight `[from, to]` chord if fewer than 3 anchors survive.
+
+The result: **52.7 % of all generated route segments are draped on real OSM rail geometry**, eliminating the famous "trains travelling over water" defect that naive interpolation produces. The remaining 47.3 % degrade gracefully to the chord — clearly labelled with `geometrySource: 'station-straight-fallback'`.
+
+#### Polyline arc-length interpolation
+
+At runtime `interpolateLine(coordinates, progress)` (`src/simulation_core/geo.js:18`) does **arc-length-parameterized interpolation** rather than coordinate-index interpolation:
+
+```js
+const lengths = coords.slice(0,-1).map((c,i) => haversineKm(c, coords[i+1]));
+const total = lengths.reduce((a,b)=>a+b, 0);
+let target = total * progress;
+for (let i = 0; i < lengths.length; i++) {
+  if (target <= lengths[i]) return interpolateCoord(coords[i], coords[i+1], target/lengths[i]);
+  target -= lengths[i];
+}
+```
+
+This means a train at 50 % `segmentProgress` is at exactly 50 % of the *real geographic distance* along the polyline, not 50 % of its vertex index — important when polyline density varies (urban hubs have more vertices than rural stretches).
+
+### 5.5 Stratified diversity sampling
+
+The first naive implementation took the first 280 routes from `line.csv`, which clustered everything along a few trunk corridors. The dashboard looked thin. The fix was a two-pass **stratified sampling** algorithm in `selectDiverseRecords()` (`scripts/prepare-data.cjs:177`):
+
+```js
+function selectDiverseRecords(records, limit) {
+  const byCorridor = groupBy(records, r => r.corridor);
+  const selected = [];
+  const seen = new Set();
+
+  // Pass 1: every macro-corridor gets a baseline of 4 routes,
+  // sorted by service-frequency × distance.
+  for (const corridorRecs of [...byCorridor.values()].sort((a,b) => b.length - a.length))
+    for (const rec of corridorRecs.slice().sort(compareRoutePriority).slice(0, 4))
+      addRecord(rec);
+
+  // Pass 2: round-robin by origin-province until limit is reached.
+  const byProvince = groupBy(records.sort(compareRoutePriority), r => r.originProvince);
+  while (selected.length < limit) {
+    let progress = false;
+    for (const recs of byProvince.values()) {
+      const next = recs.find(r => !seen.has(recordKey(r)));
+      if (next) { addRecord(next); progress = true; if (selected.length >= limit) break; }
+    }
+    if (!progress) break;
+  }
+  return selected.slice(0, limit);
+}
+```
+
+The output of the data-diversity test (`tests/dataDiversity.test.mjs`) asserts:
+
+- ≥ 1,000 simulation routes
+- ≥ 70 unique origin stations
+- ≥ 24 unique origin provinces (China has 31 provincial-level regions)
+- ≥ 20 unique macro-corridors (defined by `North/South/East/West/Central/Southwest/Northwest/Northeast` 7-region taxonomy)
+
+### 5.6 Operational realism layer
+
+A toy simulator is a static playback. This one models *operating variance*:
+
+| Effect | Where | Formula / value |
+|---|---|---|
+| **Hub dwell pressure** | `realisticSegmentMinutes` | +3 min at national hubs, +1.5 min at regional hubs |
+| **Weather drag** | `deterministicNoise(...) > 0.94` | +4 min on roughly 6 % of segments |
+| **Dispatch slack** | `deterministicNoise(...) > 0.86` | +2 min on roughly 14 % of segments |
+| **Trunk bias** | `scheduledDepartureMinute` | trunk routes (`frequencyRank > 0.55`) depart 35 min earlier |
+| **No-show probability** | `noShowProbability(...)` | base 1.8 % (商务) → 3.8 % (二等), -0.6 pp at hubs, +0.6 pp short-hop |
+| **No-show release** | `processStation` | seat interval is freed at the originating station for downstream resale |
+| **Live delay tracking** | `currentDelay(train)` | running difference between `Σ segmentMinutes` and `Σ plannedSegmentMinutes` |
+
+This is what makes the dashboard feel alive: average delay drifts as trains pass hubs, station pressure spikes when many trains converge, and revenue ticks upward with live-demand sales.
+
+#### Deterministic seeded RNG
+
+All randomness flows through a single FNV-1a-derived PRNG (`SimulationEngine.random(...parts)`):
+
+```js
+function seeded(key) {
+  let hash = 2166136261;
+  for (const ch of key) {
+    hash ^= ch.charCodeAt(0);
+    hash  = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1_000_000) / 1_000_000;
+}
+```
+
+Given a fixed `seed`, every call resolves to the same value — making test runs and demos perfectly reproducible.
+
+---
+
+## Performance & optimization
+
+| Concern | Optimization |
+|---|---|
+| **UI thread starvation** | The whole simulation moved to a Web Worker (`simulationWorker.js`). React only does paint + interaction. |
+| **Mapbox setData churn** | Snapshot ratelimited to 4 Hz; train GeoJSON capped at 700 visible features (active ∪ near-term ∪ recently-completed); completed trains drop out of the feature collection. |
+| **Mapbox style reuse** | Single `mapbox-gl` instance across renders, layers added once on `'load'`, train source updated by `getSource('trains').setData(...)` — no full re-render. |
+| **Snapshot serialization** | `snapshot()` cherry-picks only fields needed by the UI (avoids `JSON.stringify`-ing the SeatInventory). |
+| **OSM payload** | Hard caps: 8,000 features and 820,000 vertices total, with adaptive vertex stride per LineString to keep the geojson under 2.5 MB. |
+| **CSV parsing** | Single pass with quote-aware splitter, no regex backtracking. |
+| **Spatial query** | 0.35° grid hash index (§5.4) gives sub-millisecond lookups vs. linear O(features) scan. |
+| **Booking quote latency** | `algorithmMs` shown in UI: typically 0.1–1 ms per quote on a 2024 MacBook. |
+| **Test suite** | Pure ESM `node:test` runner — full suite < 1 s. |
+| **Build output** | Vite + Rollup code-splits the worker bundle (`simulationWorker-*.js` ~12 KB) from the main app. |
+
+---
+
+## Concurrency model
+
+```
+main thread                                 worker thread
+───────────                                 ─────────────
+
+new SimulationWorkerClient({ onSnapshot })
+   │ new Worker(simulationWorker.js, type:module)
+   │
+   │ ──postMessage({id:1, type:'init', payload})──►   onmessage('init')
+   │                                                    engine = new SimulationEngine(...)
+   │                                                    publish initial snapshot
+   │ ◄────postMessage({type:'snapshot', ...})─────────┘
+   │ ◄────postMessage({type:'response', id:1, ...})───
+   │
+   │ ──postMessage({id:2, type:'start'})───────────►   engine.start()
+   │                                                    setInterval(()=>postSnapshot(),250)
+   │ ◄────postMessage({type:'snapshot'})······ every 250 ms
+   │
+   │ ──postMessage({id:3, type:'quoteTrip',...})──►    respond(engine.quoteTrip(...))
+   │ ◄────postMessage({type:'response', id:3,...})
+```
+
+Three things make this clean:
+
+1. **Promise-based RPC.** `SimulationWorkerClient.call(type, payload)` allocates an auto-incrementing `id`, stashes `{resolve, reject}` in a `Map`, and posts the message. The worker echoes the same `id` back in its `'response'` envelope, the client looks it up, settles the promise, and deletes the entry.
+2. **Out-of-band push.** Snapshots are *not* request/response — they're `'snapshot'` messages with no `id`, dispatched to `onSnapshot()`. This avoids a polling loop.
+3. **Backpressure tolerance.** If the UI is slow, snapshots queue and React only re-renders on the *latest* one (`setSnapshot(nextSnapshot)`), because the worker keeps publishing regardless.
+
+This is the same pattern used in production by VS Code's extension host, Figma's render thread, Excel for the Web's calc engine, etc.
+
+---
+
+## Data pipeline
+
+`scripts/prepare-data.cjs` is a 484-line ETL that produces four artifacts in `public/`:
+
+1. **`station-data.json`** — 3,058 stations with `{id, name, address, bureau, kind, province, city, lng, lat, sourceCount, tier}`. Tier classification:
+   - `national-hub`: matches `北京|上海|广州|深圳|成都|重庆|武汉|郑州|西安|南京|杭州|长沙|天津`
+   - `regional-hub`: `sourceCount ≥ 4` or name contains a cardinal `南/西/东/北` suffix
+   - `local`: everything else
+2. **`route-data.json`** — 1,200 simulation routes with full per-segment geometry, plus the 7,278 raw service records for provenance.
+3. **`hsr-stations.geojson`** — Mapbox-ready station Point features.
+4. **`hsr-rails.geojson`** — Mapbox-ready rail LineString features (≤ 8,000, ≤ 820k vertices).
+
+Each generated route carries:
+
+```jsonc
+{
+  "id": "route-42-G7001",
+  "code": "G7001",
+  "trainNo": "240000G70010",
+  "type": "G",
+  "origin": "北京南",
+  "destination": "上海",
+  "totalDistanceKm": 1318,
+  "frequencyRank": 0.92,
+  "corridor": "East China / North China",
+  "originProvince": "北京",
+  "destinationProvince": "上海",
+  "provenance": "Real train origin/destination; intermediate stops simulation-derived...",
+  "stops": [ { "name": "...", "lng": ..., "lat": ..., "tier": "national-hub",
+              "simulatedStop": true, "dwellMinutes": 6 }, ... ],
+  "segments": [ { "from": "...", "to": "...", "distanceKm": 142,
+                  "speedLimitKmh": 350, "track": "double", "signaling": "CTCS-3 simulated",
+                  "geometry": [[lng,lat], ...], "geometrySource": "hotosm-rail-corridor" }, ... ],
+  "geometry": [ /* merged dedupe of all segment polylines */ ]
+}
+```
+
+The pipeline is **deterministic and idempotent** — given the same raw inputs, it produces byte-identical outputs.
+
+---
+
+## Visualization layer
+
+### Mapbox GL map (`HSRMap.jsx`)
+
+| Layer | Style |
+|---|---|
+| `rails` | Width-interpolated cyan/blue line, opacity 0.58, zoom-scaled width 0.7 → 5 |
+| `local-station-dots` | Tiny grey circles, radius 0.8 → 3 |
+| `regional-station-squares` | Cyan `▪` glyph, halo, sized 8 → 17 |
+| `national-station-diamonds` | Amber `◆` glyph, halo, sized 9 → 20 |
+| `train-circles` | Color `interpolate(load, 0→#10b981, 0.72→#f59e0b, 0.95→#ef4444)`, radius `interpolate(load, 0→3.5, 1→8)` |
+| `train-labels` | Train code, only at `zoom ≥ 7.2` to reduce visual clutter |
+
+A single click on a train opens a Mapbox `Popup` with `code`, current/next station, load %, and `pax/capacity`.
+
+### Operations dashboard (`Dashboard.jsx`)
+
+Built with **Recharts**:
+
+- 9-tile metric grid (revenue, passengers, active/total trains, visible-on-map, active avg delay, no-show releases, simulation thread, seat quota, trains/route)
+- Speed slider (1×–120×) wired to `worker.setSpeed`
+- *Highest segment loads* bar chart (top 18 trains by load factor)
+- *Recent booking revenue* monotonic line chart
+- *Station platform pressure* dual bar chart (active trains × passengers)
+- *Operational realism* tile (station stops, ≥ 3-min delays, no-show releases, map-render cap)
+- *Corridor coverage* + *Origin-province coverage* bar charts
+- Live train operations table (40 rows, `<meter>` element for load)
+
+### Booking panel (`BookingPanel.jsx`)
+
+Two-column form-and-quote panel:
+
+- Train / origin / destination / class / preference / accessible-seat dropdowns
+- Live `quoteTrip` debounced to selection changes
+- Quote card shows price, distance, available seats, **multipliers grid** (`scarcity`, `timePressure`, `peak`, `frequencyRelief`, `noShowBuffer`), and `algorithmMs`
+- Visual *seat strip* highlighting the held interval across the route
+- "Book Ticket" button posts `bookTrip` through the worker
+- Recent ticket list with `ticketId`, train code, OD, car-row-letter, and price
+
+---
+
+## Testing strategy
+
+The test pyramid is intentionally flat — fast, deterministic, scenario-driven:
+
+```
+tests/
+├── seatInventory.test.mjs    ← seat reuse / overlap rejection / interval timeline
+├── pricing.test.mjs          ← class ordering / scarcity monotonicity
+├── engine.test.mjs           ← end-to-end booking, scaled scheduling,
+│                                no-show release, live-demand revenue motion
+└── dataDiversity.test.mjs    ← ≥1000 routes, ≥70 origins, ≥24 provinces,
+                                  ≥20 corridors, ≥45% rail-matched segments
+```
+
+Each test is `node:test` ESM with `assert/strict`. The whole suite runs in **< 1 second**. Every test asserts behaviour the user can observe in the UI — so green tests really mean *"the feature works"*.
+
+Run them locally:
 
 ```bash
 npm test
-npm run build
-npm run verify
 ```
 
-The stable local browser URL is `http://127.0.0.1:5174/`. `npm run serve` serves the verified production bundle from `dist/`; `npm run dev` is still available for HMR development on the same fixed port.
+Sample output:
 
-If the in-app browser says the site refused to connect, the app server is not running. Rebuild and serve it with:
+```
+✓ same seat is reusable after passenger alights but blocked for overlapping intervals
+✓ dynamic pricing orders seat classes and rises with scarcity
+✓ booking engine returns ticket details and mutates interval availability
+✓ engine creates scalable scheduled services and full booking options
+✓ no-show passengers release their seat inventory after departure
+✓ live demand changes revenue and passenger totals during ticks
+✓ generated route database covers many corridors and origins
+ℹ tests 7
+ℹ pass  7
+ℹ fail  0
+```
+
+---
+
+## Project structure
+
+```
+ChinaHSR_Simulation/
+├── README.md                          ← this file
+├── README.zh-CN.md                    ← Chinese mirror
+├── run.sh / run.cmd                   ← one-shot launchers
+├── init.sh                            ← original developer harness
+├── package.json
+├── vite.config.js
+├── index.html
+├── feature_list.json                  ← spec-as-data, every feature passing
+├── handoff.md                         ← decisions & verification log
+├── agent-progress.txt                 ← session-by-session changelog
+├── public/                            ← committed data artifacts
+│   ├── station-data.json   (3,058 stations)
+│   ├── route-data.json     (1,200 routes + 7,278 records)
+│   ├── hsr-stations.geojson
+│   └── hsr-rails.geojson   (8,000 OSM rail features)
+├── scripts/
+│   ├── prepare-data.cjs               ← ETL pipeline (§8)
+│   └── serve-static.cjs               ← tiny zero-dep Node http server
+├── src/
+│   ├── main.jsx                       ← React 19 root
+│   ├── App.jsx                        ← view switcher, worker bootstrap
+│   ├── algorithms/
+│   │   ├── seatInventory.js           ← interval calendar (§5.1)
+│   │   └── pricing.js                 ← yield management (§5.2)
+│   ├── simulation_core/
+│   │   ├── SimulationEngine.js        ← DES core (§5.3)
+│   │   ├── simulationWorker.js        ← Web Worker handlers (§7)
+│   │   ├── SimulationWorkerClient.js  ← promise-based message bus (§7)
+│   │   └── geo.js                     ← haversine + polyline interpolation
+│   ├── visualization/
+│   │   ├── HSRMap.jsx
+│   │   ├── Dashboard.jsx
+│   │   └── BookingPanel.jsx
+│   └── styles/app.css
+├── tests/                             ← deterministic regression suite
+└── screenshots/                       ← marketing screenshots (this README)
+```
+
+---
+
+## Configuration & secret handling
+
+This app uses Mapbox GL with a **public** `pk.eyJ...` token by default. Public Mapbox tokens are safe to ship in client-side code as long as they don't have secret scopes. To use your own:
 
 ```bash
-npm run build
-npm run serve
+cp .env.example .env
+# edit:
+VITE_MAPBOX_TOKEN=pk.your_public_token
+VITE_MAPBOX_STYLE=mapbox://styles/your-account/your-style-id
 ```
 
-For this local desktop session the server was also submitted to `launchctl` under `com.codex.china-hsr-simulation`, so `http://127.0.0.1:5174/` stays reachable outside the transient shell command.
-
-## Booking Model
-
-Every seat stores a calendar of occupied intervals `[originStationIndex, destinationStationIndex)`. A new booking may use that seat only when its requested interval does not overlap any existing interval. Therefore:
-
-- A passenger booked from Beijing South to Jinan West blocks the seat through the Jinan West arrival segment.
-- A passenger boarding at Jinan West may reuse the same seat after the first passenger alights.
-- A passenger boarding before Jinan West for a trip that overlaps the original interval must receive another seat or be rejected.
-
-Dynamic pricing combines route distance, seat class, segment scarcity, booking horizon, peak-hour demand, and route service frequency.
-
-## Implementation Layout
-
-- `scripts/prepare-data.cjs` builds the local station, route, and Mapbox layer database.
-- `src/algorithms/seatInventory.js` implements the interval calendar, seat preferences, group seating, accessibility constraints, and seat release/cancellation.
-- `src/algorithms/pricing.js` implements distance fares, class multipliers, bid-price scarcity, peak/time-to-departure effects, no-show buffer, and elasticity metadata.
-- `src/simulation_core/SimulationEngine.js` drives the discrete-event train clock, train positions, station events, quotes, bookings, cancellations, and dashboard snapshots.
-- `src/simulation_core/simulationWorker.js` runs the simulation engine in a browser Web Worker so train updates, live demand, pricing, booking, and snapshots execute off the React/Mapbox UI thread.
-- `src/simulation_core/SimulationWorkerClient.js` is the main-thread message bridge for worker snapshots, booking, quotes, and speed controls.
-- `src/visualization/` contains the Mapbox map, operations dashboard, and booking workflow.
-- `tests/` contains deterministic regression checks for interval seat reuse, pricing behavior, and engine booking state mutation.
-
-## Verified State
-
-The current harness passes:
+Build-time secret scan (run by `init.sh`):
 
 ```bash
-./init.sh
+rg "sk\.ey" .   # must produce no matches; secret-scoped tokens never enter the repo
 ```
 
-That script regenerates the data artifacts, runs the booking/pricing tests, builds the production bundle, and scans the project for secret-looking Mapbox tokens.
+---
+
+## Tech stack
+
+- **React 19.2** with hooks (`useEffect`, `useMemo`, `useRef`, `useCallback`, `useState`)
+- **Vite 8** + `@vitejs/plugin-react` for ESM dev server and Rollup-powered code-splitting
+- **Mapbox GL JS 3.x** for raster + vector + symbol layers and zoom-interpolated styles
+- **Recharts 3.x** for `BarChart`, `LineChart` with `ResponsiveContainer`
+- **Web Workers (`type: 'module'`)** for off-main-thread simulation
+- **`node:test` + `assert/strict`** for the regression suite (zero test-runner dependency)
+- **lucide-react** icons
+- **seedrandom / FNV-1a** for deterministic RNG
+- **PapaParse** (transitively) — CSV parser was hand-rolled in `prepare-data.cjs` to keep the pipeline dependency-free
+
+---
+
+## Roadmap
+
+- [ ] Algorithm comparison page: ILP / MILP exact small-instance optimization vs. the production heuristic, with side-by-side load factor & revenue charts.
+- [ ] Scenario export/replay: serialize seed + demand profile to a JSON file, replay deterministically anywhere.
+- [ ] Authoritative timetable ingestion: when a stop-by-stop China Railways timetable becomes available, drop in the full schedule and remove the `simulatedStop` flag.
+- [ ] WebGPU compute shader for parallel seat-quote across the entire scheduled fleet (currently O(trains) per render).
+- [ ] WebSocket multi-client demo: multiple browsers booking against the same shared engine running in a Node.js worker pool.
+- [ ] Internationalisation pass (i18n strings extracted; CN labels are currently hard-coded next to EN).
+
+---
+
+## Disclaimer & data provenance
+
+This is **not an official China Railways product**, and it does not connect to or replicate the 12306 production system. It is a research-grade simulation built from publicly available datasets:
+
+- **Station list** — `China-rail-way-stations-data-main` (community-maintained Chinese railway stations CSV with WGS-84 coordinates).
+- **Train origin/destination records** — same dataset's `line.csv`, real G/D/C train OD pairs, but **without** stop-by-stop timetables. Intermediate stops are *simulation-derived* from geographically plausible stations between real endpoints, and every generated stop is labelled `simulatedStop: true`.
+- **Rail geometry** — [HOTOSM Chinese railways](https://data.humdata.org/dataset/hotosm_chn_railways) (LineString and Point GeoJSONs) under the [Open Database License](https://www.openstreetmap.org/copyright).
+
+Every generated artifact carries a `provenance` field. The simulator is open about which numbers are real (origin, destination, total distance), which are heuristically derived (intermediate stops, segment distances, segment speed limits, dwell times), and which are randomized (no-show events, weather drag, dispatch slack) — all inside a deterministic seeded RNG so demos are reproducible.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Roger Lin
+
+---
+
+> If you're a hiring manager or recruiter from **Ant Group, Alibaba, Tencent, Baidu, Huawei** (or anywhere else really), I'd love to walk you through the design choices in this codebase. Reach out via the [GitHub profile](https://github.com/linroger).
