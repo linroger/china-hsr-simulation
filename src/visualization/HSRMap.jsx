@@ -3,7 +3,7 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 const PUBLIC_MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || '';
-const MAPBOX_STYLE = import.meta.env.VITE_MAPBOX_STYLE || 'mapbox://styles/mapbox/dark-v11';
+const MAPBOX_STYLE = import.meta.env.VITE_MAPBOX_STYLE || 'mapbox://styles/linroger023/cmoo6ced0003m01sa25xq2hig';
 
 export default function HSRMap({ trains, events }) {
   const containerRef = useRef(null);
@@ -13,6 +13,7 @@ export default function HSRMap({ trains, events }) {
   const targetTrainsRef = useRef([]);
   const transitionRef = useRef({ started: 0, duration: 140 });
   const frameRef = useRef(null);
+  const lastRenderRef = useRef(0);
   const animateRef = useRef(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
@@ -145,7 +146,10 @@ export default function HSRMap({ trains, events }) {
       const eased = easeInOut(progress);
       const rendered = interpolateTrainSet(previousTrainsRef.current, targetTrainsRef.current, eased);
       currentTrainsRef.current = rendered;
-      mapRef.current.getSource('trains').setData(trainGeojson(rendered));
+      if (timestamp - lastRenderRef.current >= 32 || progress >= 1) {
+        mapRef.current.getSource('trains').setData(trainGeojson(rendered));
+        lastRenderRef.current = timestamp;
+      }
       if (progress < 1) {
         frameRef.current = requestAnimationFrame(animateRef.current);
       } else {
@@ -162,7 +166,7 @@ export default function HSRMap({ trains, events }) {
     const start = performance.now();
     previousTrainsRef.current = currentTrainsRef.current.length ? currentTrainsRef.current : trains;
     targetTrainsRef.current = trains;
-    transitionRef.current = { started: start, duration: 150 };
+    transitionRef.current = { started: start, duration: 190 };
     if (!frameRef.current) frameRef.current = requestAnimationFrame(animateRef.current);
   }, [ready, trains]);
 

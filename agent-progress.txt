@@ -40,3 +40,13 @@ Next steps:
 1. Improve realism by adding an authoritative full timetable source if available.
 2. Add a dedicated algorithm comparison page for exact small-instance optimization versus the production heuristic.
 3. Add scenario export/replay so runs can be reproduced from a saved seed and demand profile.
+
+2026-05-02T20:19:11Z | branch: main
+Feature/bug worked on: Calendar surge, high-volume operations, and smoother train animation.
+Files touched: src/simulation_core/SimulationEngine.js, src/simulation_core/simulationWorker.js, src/visualization/HSRMap.jsx, scripts/prepare-data.cjs, .env.example, feature_list.json, handoff.md, public generated data artifacts.
+Tests run: `npm run prepare:data` (3058 stations, 7278 HSR records, 1200 routes, 85 origins, 27 corridors, 8000 rail features); `npm test` (8/8 passing); `npm run build` (passing, emits `simulationWorker-DhahEsPn.js`); `./init.sh` (complete); `curl -I http://127.0.0.1:5174/` (HTTP 200); `rg "sk\\.ey" .` (no matches); full-engine probe (6000 trains, 663 active, 2,692,848 passengers, 6.62x prior 407,005 passenger baseline, min/median/max services per route 4/5/7, Jan 1 New Year surge, 1.28x price surge, p95 quote 0.057 ms); in-app browser screenshot and Dashboard DOM verification.
+Result: Passing. The simulation now starts on Jan 1 with a 24-hour clock, holiday/weekend/peak-season calendar logic, New Year surge demand/pricing, at least two trains per route and 6000 total trains by default, progressive worker demand preload for browser responsiveness, smaller/interpolated train markers, and dashboard metrics for calendar day, demand surge, price surge, route daily range, and worker cadence. The stable URL remains http://127.0.0.1:5174/.
+Next steps:
+1. Add an authoritative stop-by-stop timetable source if available to replace simulation-derived intermediate stops.
+2. Add a scenario/replay export so calendar, demand, and seed choices can be reproduced from the UI.
+3. Add a dedicated algorithm comparison view for exact small-instance optimization versus the production heuristic.

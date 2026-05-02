@@ -5,7 +5,7 @@ import { haversineKm, interpolateCoord, interpolateLine } from './geo.js';
 const DEFAULT_SPEED_KMH = 285;
 const DEFAULT_MAX_TRAINS = 6000;
 const MIN_DAILY_TRAINS_PER_ROUTE = 2;
-const SNAPSHOT_TRAIN_LIMIT = 1200;
+const SNAPSHOT_TRAIN_LIMIT = 850;
 const TRAIN_SEAT_QUOTA = 554;
 const SERVICE_DAY_START_YEAR = 2026;
 const SERVICE_DAY_START_MONTH = 0;
@@ -26,6 +26,7 @@ export class SimulationEngine {
     this.running = false;
     this.speed = 10;
     this.callbacks = { onUpdate: null };
+    this.preloadCursor = 0;
     const routeServiceStats = summarizeRouteServices(this.trains, this.routes);
     this.stats = {
       totalRevenue: 0,
@@ -98,31 +99,50 @@ export class SimulationEngine {
   }
 
   preloadDemand() {
-    for (const train of this.trains) {
-      const demandIntensity = routeDemandIntensity(train);
-      const calendarDemand = train.calendar?.demandMultiplier || this.calendar.demandMultiplier || 1;
-      const targetLoad = Math.min(0.96, 0.58 + demandIntensity * 0.16 + (calendarDemand - 1) * 0.14 + this.random(train.id, 'load') * 0.12);
-      const targetPassengers = Math.round(TRAIN_SEAT_QUOTA * targetLoad);
-      const attempts = Math.max(42, Math.round(targetPassengers / 4.15));
-      let bookedPassengers = 0;
-      for (let i = 0; i < attempts && bookedPassengers < targetPassengers; i += 1) {
-        const originIndex = Math.floor(this.random(train.id, i) * Math.max(1, train.stops.length - 2));
-        const maxDest = train.stops.length - 1;
-        const destinationIndex = Math.min(maxDest, originIndex + 1 + Math.floor(this.random(train.id, i, 'd') * Math.min(5, maxDest - originIndex)));
-        const seatClass = weightedClass(this.random(train.id, i, 'c'));
-        const remaining = Math.max(1, targetPassengers - bookedPassengers);
-        const groupSize = Math.min(6, remaining, groupSizeFromRandom(this.random(train.id, i, 'g')));
-        const response = this.bookTrip({
-          trainId: train.id,
-          originIndex,
-          destinationIndex,
-          seatClass,
-          groupSize,
-          passengerName: `Sim Pax ${i + 1}`,
-          silent: true,
-        });
-        if (response.ok) bookedPassengers += groupSize;
-      }
+    while (this.preloadCursor < this.trains.length) {
+      this.preloadTrainDemand(this.trains[this.preloadCursor]);
+      this.preloadCursor += 1;
+    }
+  }
+
+  preloadDemandBatch(trainBatchSize = 80) {
+    let processed = 0;
+    while (processed < trainBatchSize && this.preloadCursor < this.trains.length) {
+      this.preloadTrainDemand(this.trains[this.preloadCursor]);
+      this.preloadCursor += 1;
+      processed += 1;
+    }
+    return {
+      processed,
+      done: this.preloadCursor >= this.trains.length,
+      progress: this.trains.length ? Math.round((this.preloadCursor / this.trains.length) * 1000) / 10 : 100,
+    };
+  }
+
+  preloadTrainDemand(train) {
+    const demandIntensity = routeDemandIntensity(train);
+    const calendarDemand = train.calendar?.demandMultiplier || this.calendar.demandMultiplier || 1;
+    const targetLoad = Math.min(0.96, 0.58 + demandIntensity * 0.16 + (calendarDemand - 1) * 0.14 + this.random(train.id, 'load') * 0.12);
+    const targetPassengers = Math.round(TRAIN_SEAT_QUOTA * targetLoad);
+    const attempts = Math.max(42, Math.round(targetPassengers / 4.15));
+    let bookedPassengers = 0;
+    for (let i = 0; i < attempts && bookedPassengers < targetPassengers; i += 1) {
+      const originIndex = Math.floor(this.random(train.id, i) * Math.max(1, train.stops.length - 2));
+      const maxDest = train.stops.length - 1;
+      const destinationIndex = Math.min(maxDest, originIndex + 1 + Math.floor(this.random(train.id, i, 'd') * Math.min(5, maxDest - originIndex)));
+      const seatClass = weightedClass(this.random(train.id, i, 'c'));
+      const remaining = Math.max(1, targetPassengers - bookedPassengers);
+      const groupSize = Math.min(6, remaining, groupSizeFromRandom(this.random(train.id, i, 'g')));
+      const response = this.bookTrip({
+        trainId: train.id,
+        originIndex,
+        destinationIndex,
+        seatClass,
+        groupSize,
+        passengerName: `Sim Pax ${i + 1}`,
+        silent: true,
+      });
+      if (response.ok) bookedPassengers += groupSize;
     }
   }
 

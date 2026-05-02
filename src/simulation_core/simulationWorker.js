@@ -1,9 +1,10 @@
 import { SimulationEngine } from './SimulationEngine.js';
 
-const SNAPSHOT_INTERVAL_MS = 100;
+const SNAPSHOT_INTERVAL_MS = 150;
 
 let engine = null;
 let publishTimer = null;
+let preloadTimer = null;
 let initialized = false;
 
 self.onmessage = (event) => {
@@ -12,11 +13,13 @@ self.onmessage = (event) => {
     if (type === 'init') {
       engine?.stop();
       stopPublishing();
-      engine = new SimulationEngine(payload);
+      stopBackgroundPreload();
+      engine = new SimulationEngine({ ...payload, preloadDemand: payload.preloadDemand ?? false });
       engine.setSpeed(payload.speed || 18);
       initialized = true;
       postSnapshot('init');
       respond(id, { ok: true, worker: workerInfo() });
+      startBackgroundPreload();
       return;
     }
 
@@ -66,10 +69,32 @@ function postSnapshot(reason) {
     type: 'snapshot',
     reason,
     snapshot: {
-      ...engine.snapshot({ includeBookingOptions: reason !== 'tick' }),
+      ...engine.snapshot({ includeBookingOptions: reason === 'init' || reason === 'booking' || reason === 'manual' }),
       worker: workerInfo(),
     },
   });
+}
+
+function startBackgroundPreload() {
+  stopBackgroundPreload();
+  const runChunk = () => {
+    if (!engine) return;
+    const result = engine.preloadDemandBatch(120);
+    if (result.processed) postSnapshot('preload');
+    if (result.done) {
+      engine.logEvent('demand', `Background demand preload complete: ${engine.stats.totalPassengers.toLocaleString()} passengers booked.`);
+      postSnapshot('preload-complete');
+      stopBackgroundPreload();
+    } else {
+      preloadTimer = setTimeout(runChunk, 8);
+    }
+  };
+  preloadTimer = setTimeout(runChunk, 0);
+}
+
+function stopBackgroundPreload() {
+  if (preloadTimer) clearTimeout(preloadTimer);
+  preloadTimer = null;
 }
 
 function respond(id, payload) {
@@ -86,5 +111,6 @@ function workerInfo() {
     mode: 'web-worker',
     thread: 'simulation-worker',
     snapshotIntervalMs: SNAPSHOT_INTERVAL_MS,
+    demandPreload: engine?.preloadCursor >= engine?.trains?.length ? 'complete' : 'streaming',
   };
 }

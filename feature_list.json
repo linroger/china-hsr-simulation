@@ -59,5 +59,19 @@
       "Update handoff.md and agent-progress.txt with evidence"
     ],
     "passes": true
+  },
+  {
+    "id": "feature_calendar_surge_high_volume_operations",
+    "category": "simulation",
+    "description": "Run a 24-hour January 1 simulation with calendar surge demand, at least two trains per route per day, dynamically higher train counts and prices during surge periods, 5x passenger volume, optimized allocation, and smoother train animation.",
+    "steps": [
+      "Open the app at http://127.0.0.1:5174/",
+      "Verify the header shows January 1 with a New Year travel surge label",
+      "Verify the simulation schedules thousands of trains with at least two trains per route",
+      "Verify passenger count exceeds 5x the prior 407,005-passenger baseline",
+      "Verify dashboard metrics expose demand surge, price surge, service range, and worker cadence",
+      "Verify the map uses smaller train markers and interpolated animation between worker snapshots"
+    ],
+    "passes": true
   }
 ]
