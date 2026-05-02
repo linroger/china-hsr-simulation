@@ -5,10 +5,15 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const SOURCE_ROOT = path.resolve(ROOT, '..');
 const PUBLIC = path.join(ROOT, 'public');
-const STATION_CSV = path.join(SOURCE_ROOT, 'China-rail-way-stations-data-main/src/station.csv');
-const LINE_CSV = path.join(SOURCE_ROOT, 'China-rail-way-stations-data-main/src/line.csv');
-const OSM_POINTS = path.join(SOURCE_ROOT, 'hotosm_chn_railways_points_geojson/hotosm_chn_railways_points_geojson.geojson');
-const OSM_LINES = path.join(SOURCE_ROOT, 'hotosm_chn_railways_lines_geojson/hotosm_chn_railways_lines_geojson.geojson');
+const SOURCE_CANDIDATE_ROOTS = [
+  SOURCE_ROOT,
+  path.resolve(SOURCE_ROOT, '..', 'chinashsr copy'),
+  path.resolve(SOURCE_ROOT, '..'),
+];
+const STATION_CSV = findSourceFile(['China-rail-way-stations-data-main/src/station.csv', 'sim/public/station.csv', 'sim/dist/station.csv']);
+const LINE_CSV = findSourceFile(['China-rail-way-stations-data-main/src/line.csv', 'sim/public/line.csv', 'sim/dist/line.csv']);
+const OSM_POINTS = findSourceFile(['hotosm_chn_railways_points_geojson/hotosm_chn_railways_points_geojson.geojson']);
+const OSM_LINES = findSourceFile(['hotosm_chn_railways_lines_geojson/hotosm_chn_railways_lines_geojson.geojson']);
 const MAX_SIMULATION_ROUTES = 1200;
 
 fs.mkdirSync(PUBLIC, { recursive: true });
@@ -431,6 +436,18 @@ function splitCsvLine(line) {
 
 function clean(value) {
   return String(value || '').trim();
+}
+
+function findSourceFile(relativePaths) {
+  const checked = [];
+  for (const root of SOURCE_CANDIDATE_ROOTS) {
+    for (const relativePath of relativePaths) {
+      const candidate = path.join(root, relativePath);
+      checked.push(candidate);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  throw new Error(`Unable to find required source file. Checked:\n${checked.map((item) => `- ${item}`).join('\n')}`);
 }
 
 function stationTier(station) {
