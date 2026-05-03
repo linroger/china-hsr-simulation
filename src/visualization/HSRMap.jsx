@@ -4,6 +4,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 
 const PUBLIC_MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || '';
 const MAPBOX_STYLE = import.meta.env.VITE_MAPBOX_STYLE || 'mapbox://styles/mapbox/dark-v11';
+const HAS_VALID_TOKEN = PUBLIC_MAPBOX_TOKEN && PUBLIC_MAPBOX_TOKEN.startsWith('pk.') && !PUBLIC_MAPBOX_TOKEN.includes('replace_with_your');
 
 export default function HSRMap({ trains, events }) {
   const containerRef = useRef(null);
@@ -20,17 +21,27 @@ export default function HSRMap({ trains, events }) {
 
   useEffect(() => {
     if (mapRef.current) return undefined;
-    mapboxgl.accessToken = PUBLIC_MAPBOX_TOKEN;
-    const map = new mapboxgl.Map({
-      container: containerRef.current,
-      style: MAPBOX_STYLE,
-      center: [104.2, 35.8],
-      zoom: 3.7,
-      minZoom: 3,
-      maxZoom: 12,
-      pitch: 24,
-      attributionControl: false,
-    });
+    if (!HAS_VALID_TOKEN) {
+      setError('missing-token');
+      return undefined;
+    }
+    let map;
+    try {
+      mapboxgl.accessToken = PUBLIC_MAPBOX_TOKEN;
+      map = new mapboxgl.Map({
+        container: containerRef.current,
+        style: MAPBOX_STYLE,
+        center: [104.2, 35.8],
+        zoom: 3.7,
+        minZoom: 3,
+        maxZoom: 12,
+        pitch: 24,
+        attributionControl: false,
+      });
+    } catch (constructError) {
+      setError(constructError?.message || 'Failed to initialise Mapbox.');
+      return undefined;
+    }
     map.addControl(new mapboxgl.NavigationControl({ showCompass: true }), 'bottom-right');
     map.on('load', () => {
       map.addSource('rails', { type: 'geojson', data: '/hsr-rails.geojson' });
@@ -170,10 +181,32 @@ export default function HSRMap({ trains, events }) {
     if (!frameRef.current) frameRef.current = requestAnimationFrame(animateRef.current);
   }, [ready, trains]);
 
+  if (error === 'missing-token') {
+    return (
+      <div className="map-pane map-pane-fallback">
+        <div className="map-token-warning">
+          <h2>Mapbox token not configured</h2>
+          <p>The map view needs a public Mapbox token to render. Configure it before building:</p>
+          <pre>cp .env.example .env
+# then edit .env and set:
+VITE_MAPBOX_TOKEN=pk.your_public_mapbox_token
+VITE_MAPBOX_STYLE=mapbox://styles/mapbox/dark-v11
+npm run build && npm run serve</pre>
+          <p>The Dashboard and Booking views still work without Mapbox — try those tabs while the token is being set up. <strong>{(trains || []).length} trains</strong> are running in the simulation right now.</p>
+          <p>Get a free public token at <a href="https://account.mapbox.com/access-tokens/" target="_blank" rel="noreferrer">account.mapbox.com</a>.</p>
+        </div>
+        <div className="map-events">
+          <b>Recent events</b>
+          {(events || []).slice(0, 8).map((event) => <span key={event.id}>{event.message}</span>)}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="map-pane">
       <div ref={containerRef} className="mapbox-container" />
-      {error && <div className="map-error">{error}</div>}
+      {error && error !== 'missing-token' && <div className="map-error">{error}</div>}
       <div className="map-legend">
         <b>Live algorithm map</b>
         <span><i className="rail" /> OSM rail layer</span>

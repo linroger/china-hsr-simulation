@@ -896,13 +896,20 @@ ChinaHSR_Simulation/
 
 ## Configuration & secret handling
 
-This app uses Mapbox GL with a **public** `pk.eyJ...` token by default. Public Mapbox tokens are safe to ship in client-side code as long as they don't have secret scopes. To use your own:
+> **Required first step:** the map view needs a public Mapbox token at build time. Without it, the map tab shows a clear "token not configured" panel with copy-paste setup instructions, and the Dashboard / Booking tabs still work. Public Mapbox tokens (`pk.…`) are safe to ship in client-side code as long as they don't carry secret scopes.
 
 ```bash
 cp .env.example .env
-# edit:
+# edit .env and set at minimum:
 VITE_MAPBOX_TOKEN=pk.your_public_token
-VITE_MAPBOX_STYLE=mapbox://styles/your-account/your-style-id
+VITE_MAPBOX_STYLE=mapbox://styles/your-account/your-style-id   # or mapbox/dark-v11
+
+# optional — enables OceanBase persistence + live booking ledger ingest:
+OB_PASSWORD=your_local_oceanbase_password
+CHINAHSR_PYTHON=/path/to/python3      # if your default python3 doesn't have PyMySQL
+
+# rebuild so Vite injects the token into the bundle
+npm run build && npm run serve
 ```
 
 Build-time secret scan (run by `init.sh`):

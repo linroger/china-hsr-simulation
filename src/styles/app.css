@@ -222,6 +222,58 @@ input {
   color: #fecaca;
 }
 
+.map-pane-fallback {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.map-token-warning {
+  max-width: 720px;
+  background: rgba(15, 23, 42, .92);
+  border: 1px solid rgba(148, 163, 184, .25);
+  border-radius: 14px;
+  padding: 32px 36px;
+  color: #e2e8f0;
+  display: grid;
+  gap: 14px;
+}
+
+.map-token-warning h2 {
+  margin: 0;
+  color: #f59e0b;
+  font-size: 20px;
+}
+
+.map-token-warning p {
+  margin: 0;
+  color: #cbd5e1;
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.map-token-warning pre {
+  background: rgba(2, 6, 23, .8);
+  border: 1px solid rgba(148, 163, 184, .15);
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-size: 12.5px;
+  color: #93c5fd;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.map-token-warning a {
+  color: #38bdf8;
+  text-decoration: none;
+}
+
+.map-token-warning a:hover {
+  text-decoration: underline;
+}
+
 .popup {
   display: grid;
   gap: 4px;

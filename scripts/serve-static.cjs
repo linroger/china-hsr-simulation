@@ -86,7 +86,8 @@ function handleIngestBookings(request, response) {
 }
 
 function runIngestProcess(filePath, count) {
-  const child = spawn('python3', [path.join(ROOT, 'scripts', 'oceanbase_booking_ingest.py'), '--input', filePath], {
+  const pythonBin = process.env.CHINAHSR_PYTHON || 'python3';
+  const child = spawn(pythonBin, [path.join(ROOT, 'scripts', 'oceanbase_booking_ingest.py'), '--input', filePath], {
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
