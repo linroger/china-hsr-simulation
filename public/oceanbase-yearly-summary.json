@@ -1,27 +1,27 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-03T16:53:56+00:00",
-  "runId": "yearly-20260503T165354Z",
+  "generatedAt": "2026-05-03T17:48:32+00:00",
+  "runId": "yearly-20260503T174820Z",
   "source": "OceanBase annual route-day aggregate simulation",
-  "database": "skipped",
+  "database": "chinahsr",
   "startDate": "2026-01-01",
   "endDate": "2026-12-31",
   "days": 365,
   "stationCount": 3147,
   "routeCount": 1200,
   "routeDayRows": 438000,
-  "totalTrainServices": 5469688,
-  "estimatedPassengers": 2573835026,
-  "estimatedRevenue": 915093470567.65,
+  "totalTrainServices": 5538508,
+  "estimatedPassengers": 2606735581,
+  "estimatedRevenue": 1088301237766.76,
   "surgeDayCount": 198,
   "workerCount": 4,
   "cpuCount": 16,
   "chunkDays": 8,
-  "generatedSeconds": 1.838,
+  "generatedSeconds": 11.665,
   "dailyAverages": {
-    "trainServices": 14985.4,
-    "passengers": 7051602.8,
-    "revenue": 2507105398.82
+    "trainServices": 15174.0,
+    "passengers": 7141741.3,
+    "revenue": 2981647226.76
   },
   "calendar": [
     {
@@ -134,8 +134,17 @@
     }
   ],
   "oceanbase": {
-    "enabled": false,
-    "tables": {}
+    "enabled": true,
+    "tables": {
+      "stations": 3147,
+      "routes": 2394,
+      "routeStops": 15906,
+      "routeSegments": 13512,
+      "routeGeometry": 7338,
+      "simulationRuns": 3,
+      "dailyRouteServicesForRun": 438000,
+      "calendarSummaryForRun": 365
+    }
   },
   "architecture": {
     "browserDetailedMode": "rolling-day seat-level Web Worker",

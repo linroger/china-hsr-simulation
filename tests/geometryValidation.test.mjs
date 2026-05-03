@@ -42,6 +42,49 @@ test('OSM augmentation surfaces national hubs missing from station CSV', () => {
   }
 });
 
+test('long routes prefer hub stations on actual HSR mainline (no local coastal halts)', () => {
+  const routeData = JSON.parse(fs.readFileSync(new URL('../public/route-data.json', import.meta.url), 'utf8'));
+  const longRoutes = routeData.routes.filter((route) => route.totalDistanceKm >= 1000);
+  assert.ok(longRoutes.length >= 30, `expected ≥30 long-distance routes, saw ${longRoutes.length}`);
+
+  // For long routes, intermediate stops must be majority HSR-grade
+  // (national-hub or regional-hub). Simulation routes that pick local coastal
+  // halts as intermediate stops cause the rail-traced A* to wander off the
+  // actual HSR mainline.
+  let routesWithLocalHeavyStops = 0;
+  for (const route of longRoutes) {
+    const intermediate = route.stops.slice(1, -1);
+    if (!intermediate.length) continue;
+    const localCount = intermediate.filter((stop) => stop.tier === 'local').length;
+    if (localCount / intermediate.length > 0.4) routesWithLocalHeavyStops += 1;
+  }
+  assert.ok(
+    routesWithLocalHeavyStops / longRoutes.length < 0.05,
+    `expected <5% of long routes to have >40% local-tier intermediate stops, saw ${routesWithLocalHeavyStops}/${longRoutes.length}`,
+  );
+
+  // Beijing南 → 上海虹桥 (the real 京沪高铁) should hit at least Tianjin/Cangzhou,
+  // Jinan, Nanjing, and Suzhou/Wuxi area in some form.
+  const bjsh = routeData.routes.find((route) => route.origin === '北京南' && route.destination === '上海虹桥');
+  if (bjsh) {
+    const stopNames = bjsh.stops.map((stop) => stop.name);
+    const expectedAnchors = [
+      ['天津', '沧州', '廊坊'],   // northern anchor
+      ['济南', '德州', '泰安'],   // mid anchor
+      ['南京', '徐州', '蚌埠'],   // central anchor
+      ['苏州', '无锡', '常州'],   // southern anchor
+    ];
+    let hits = 0;
+    for (const group of expectedAnchors) {
+      if (stopNames.some((name) => group.some((anchor) => name.includes(anchor)))) hits += 1;
+    }
+    assert.ok(
+      hits >= 3,
+      `Beijing-Shanghai stops should anchor on at least 3 of the 4 京沪高铁 corridor regions; saw ${hits}/4 in ${stopNames.join(' / ')}`,
+    );
+  }
+});
+
 test('route deduplication keeps OD pairs roughly unique per direction', () => {
   const routeData = JSON.parse(fs.readFileSync(new URL('../public/route-data.json', import.meta.url), 'utf8'));
   const directedPairs = new Map();

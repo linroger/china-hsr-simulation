@@ -286,6 +286,18 @@ for (const record of knownRoutes) {
 }
 const maxFrequency = Math.max(1, ...serviceFrequency.values());
 
+// Build the HSR-eligible-stations set: any station that ever appears as
+// origin OR destination of a G/D/C train. Intermediate stops on simulation
+// routes MUST be drawn from this set so the rail-traced A* path stays on
+// HSR-grade lines instead of wandering onto local coastal rail.
+const hsrEligibleNames = new Set();
+for (const record of enrichedRouteRecords) {
+  if (record.originKnown) hsrEligibleNames.add(record.origin);
+  if (record.destinationKnown) hsrEligibleNames.add(record.destination);
+}
+const hsrEligibleStations = stations.filter((station) => hsrEligibleNames.has(station.name));
+console.log(`[prepare:data] HSR-eligible stations (origin/destination of any G/D/C train): ${hsrEligibleStations.length}`);
+
 console.log(`[prepare:data] known endpoint records: ${knownRoutes.length} (${((knownRoutes.length / enrichedRouteRecords.length) * 100).toFixed(1)}%)`);
 
 console.log('[prepare:data] reading OSM rail lines...');
@@ -397,7 +409,11 @@ function buildRoute(record, index) {
   const destination = stationByName.get(record.destination);
   const totalKm = distance(origin, destination) * 1.12;
   const stopTarget = Math.max(3, Math.min(12, Math.round(totalKm / 145) + 2));
-  const intermediate = pickIntermediateStops(origin, destination, totalKm, stopTarget);
+  // First trace the rail path between origin and destination so intermediate
+  // stop selection can prefer stations close to the actual rail line, not
+  // just the geographic chord.
+  const referencePath = railGeometryBetween(origin, destination);
+  const intermediate = pickIntermediateStops(origin, destination, totalKm, stopTarget, referencePath.coordinates);
   const stops = [origin, ...intermediate, destination].map((station, stopIndex) => ({
     id: station.id,
     name: station.name,
@@ -449,20 +465,64 @@ function buildRoute(record, index) {
   };
 }
 
-function pickIntermediateStops(origin, destination, totalKm, stopTarget) {
+function pickIntermediateStops(origin, destination, totalKm, stopTarget, referencePath) {
+  // Restrict candidate pool to HSR-eligible stations only — i.e., stations
+  // that have actually appeared as origin/destination of a G/D/C train.
+  // This stops the route from picking local coastal-rail halts that would
+  // pull the A* trace onto non-HSR lines.
+  const referenceLine = referencePath && referencePath.length >= 2 ? referencePath : null;
   const corridorWidth = Math.max(45, Math.min(140, totalKm * 0.18));
-  return stations
-    .filter((station) => station.name !== origin.name && station.name !== destination.name)
-    .map((station) => ({
-      station,
-      projection: project(origin, destination, station),
-      detour: detourKm(origin, destination, station),
-    }))
-    .filter((item) => item.projection > 0.06 && item.projection < 0.94 && item.detour < corridorWidth)
-    .sort((a, b) => a.detour - b.detour)
-    .slice(0, stopTarget - 2)
+  const pool = hsrEligibleStations.filter((station) => station.name !== origin.name && station.name !== destination.name);
+
+  const candidates = pool.map((station) => {
+    const projection = project(origin, destination, station);
+    const chordDetour = detourKm(origin, destination, station);
+    // Distance from station to the rail-traced reference path. Prefer stations
+    // close to the real rail line over those that merely hug the chord.
+    const railDeviation = referenceLine ? distanceToPolylineKm(station, referenceLine) : chordDetour;
+    return { station, projection, chordDetour, railDeviation };
+  })
+  // Keep only stations within the corridor band along the chord direction.
+  .filter((item) => item.projection > 0.04 && item.projection < 0.96)
+  // Allow up to 90 km off the rail-traced path, or 1.5x the chord-corridor — whichever is wider.
+  .filter((item) => item.railDeviation < Math.max(90, corridorWidth * 1.5));
+
+  // Phase 1: pick national/regional hubs near the rail path. Hubs are the
+  // backbone of HSR routes (北京南/天津南/济南西/南京南/苏州北/上海虹桥, etc.).
+  const hubs = candidates
+    .filter((item) => item.station.tier === 'national-hub' || item.station.tier === 'regional-hub')
+    .sort((a, b) => a.railDeviation - b.railDeviation)
+    .slice(0, Math.max(stopTarget - 2, 6))
+    .sort((a, b) => a.projection - b.projection);
+
+  if (hubs.length >= stopTarget - 2) return hubs.slice(0, stopTarget - 2).map((item) => item.station);
+
+  // Phase 2: backfill with HSR-eligible local stations that hug the rail path.
+  const hubKeys = new Set(hubs.map((item) => item.station.name));
+  const fillers = candidates
+    .filter((item) => !hubKeys.has(item.station.name))
+    .sort((a, b) => a.railDeviation - b.railDeviation)
+    .slice(0, stopTarget - 2 - hubs.length);
+
+  return [...hubs, ...fillers]
     .sort((a, b) => a.projection - b.projection)
     .map((item) => item.station);
+}
+
+function distanceToPolylineKm(point, polyline) {
+  let best = Infinity;
+  for (let i = 0; i < polyline.length - 1; i += 1) {
+    const a = { lng: polyline[i][0], lat: polyline[i][1] };
+    const b = { lng: polyline[i + 1][0], lat: polyline[i + 1][1] };
+    const t = Math.max(0, Math.min(1, project(a, b, point)));
+    const projected = { lng: a.lng + (b.lng - a.lng) * t, lat: a.lat + (b.lat - a.lat) * t };
+    const km = distance(projected, point);
+    if (km < best) best = km;
+  }
+  if (best === Infinity) {
+    return polyline.length ? distance({ lng: polyline[0][0], lat: polyline[0][1] }, point) : 0;
+  }
+  return best;
 }
 
 function deduplicateByOd(records) {
