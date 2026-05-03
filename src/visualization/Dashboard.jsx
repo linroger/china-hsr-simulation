@@ -1,19 +1,21 @@
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { CalendarDays, CircleDollarSign, Gauge, Timer, TrainFront, TrendingUp, Users } from 'lucide-react';
+import { CalendarDays, CircleDollarSign, Cpu, Database, Gauge, Timer, TrainFront, TrendingUp, Users } from 'lucide-react';
 
-export default function Dashboard({ snapshot, speed, onSpeedChange }) {
+export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummary }) {
   const trains = snapshot.trains || [];
   const topLoads = trains.slice().sort((a, b) => b.loadFactor - a.loadFactor).slice(0, 18);
   const revenueSeries = buildRevenueSeries(snapshot.bookings || []);
+  const annual = yearlySummary;
 
   return (
     <div className="dashboard">
       <section className="metric-grid">
-        <Metric icon={<CircleDollarSign />} label="Revenue" value={`¥${Math.round(snapshot.stats.totalRevenue).toLocaleString()}`} />
+        <Metric icon={<CircleDollarSign />} label="Revenue" value={formatCurrencyCompact(snapshot.stats.totalRevenue)} />
         <Metric icon={<Users />} label="Passengers booked" value={snapshot.stats.totalPassengers.toLocaleString()} />
         <Metric icon={<TrainFront />} label="Active / total trains" value={`${snapshot.stats.activeTrains || 0}/${snapshot.stats.trainCount || trains.length}`} />
         <Metric icon={<Timer />} label="Visible on map" value={snapshot.stats.visibleTrainCount || trains.length} />
         <Metric icon={<CalendarDays />} label="Calendar day" value={`${snapshot.stats.simulationDate || 'Jan 1'} ${snapshot.stats.simulationClock || ''}`} />
+        <Metric icon={<CalendarDays />} label="Year progress" value={`${snapshot.stats.currentServiceDayNumber || 1}/${snapshot.stats.simulationYearDays || 365}`} />
         <Metric icon={<TrendingUp />} label="Demand surge" value={`${snapshot.stats.calendarLabel || 'Normal'} · ${snapshot.stats.calendarDemandMultiplier || 1}x`} />
         <Metric icon={<CircleDollarSign />} label="Price surge" value={`${snapshot.stats.calendarPriceSurgeMultiplier || 1}x`} />
         <Metric icon={<Timer />} label="Active avg delay" value={`${snapshot.stats.activeAverageDelayMinutes || 0} min`} />
@@ -23,6 +25,11 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
         <Metric icon={<Users />} label="Seat quota / train" value={snapshot.stats.seatQuotaPerTrain || 554} />
         <Metric icon={<TrainFront />} label="Trains / route" value={`${snapshot.stats.trainsPerRoute || '—'} avg`} />
         <Metric icon={<TrainFront />} label="Route daily range" value={`${snapshot.stats.minTrainsPerRoute || 0}-${snapshot.stats.maxTrainsPerRoute || 0}`} />
+        <Metric icon={<TrainFront />} label="Cumulative live trains" value={(snapshot.stats.cumulativeTrainServices || snapshot.stats.trainCount || 0).toLocaleString()} />
+        {annual && <Metric icon={<Database />} label="Annual trains" value={annual.totalTrainServices.toLocaleString()} />}
+        {annual && <Metric icon={<Users />} label="Annual passengers" value={annual.estimatedPassengers.toLocaleString()} />}
+        {annual && <Metric icon={<CircleDollarSign />} label="Annual revenue" value={formatCurrencyCompact(annual.estimatedRevenue)} />}
+        {annual && <Metric icon={<Cpu />} label="Annual workers" value={`${annual.workerCount}/${annual.cpuCount} cores`} />}
       </section>
 
       <section className="control-strip">
@@ -84,6 +91,33 @@ export default function Dashboard({ snapshot, speed, onSpeedChange }) {
           </div>
         </div>
       </section>
+
+      {annual && (
+        <section className="chart-grid">
+          <div className="panel">
+            <h2>OceanBase Year Simulation</h2>
+            <div className="realism-grid">
+              <Realism label="Run ID" value={annual.runId} />
+              <Realism label="Service dates" value={`${annual.startDate} to ${annual.endDate}`} />
+              <Realism label="Route-day rows" value={annual.routeDayRows.toLocaleString()} />
+              <Realism label="Surge days" value={annual.surgeDayCount} />
+              <Realism label="Daily train avg" value={annual.dailyAverages?.trainServices?.toLocaleString()} />
+              <Realism label="Annual revenue exact" value={`¥${Math.round(annual.estimatedRevenue).toLocaleString()}`} />
+            </div>
+          </div>
+          <div className="panel">
+            <h2>OceanBase Table Counts</h2>
+            <div className="realism-grid">
+              <Realism label="Stations" value={annual.oceanbase?.tables?.stations?.toLocaleString() || '—'} />
+              <Realism label="Routes" value={annual.oceanbase?.tables?.routes?.toLocaleString() || '—'} />
+              <Realism label="Route stops" value={annual.oceanbase?.tables?.routeStops?.toLocaleString() || '—'} />
+              <Realism label="Route segments" value={annual.oceanbase?.tables?.routeSegments?.toLocaleString() || '—'} />
+              <Realism label="Daily service facts" value={annual.oceanbase?.tables?.dailyRouteServicesForRun?.toLocaleString() || '—'} />
+              <Realism label="Render backend" value={annual.architecture?.rendering || 'Mapbox WebGL'} />
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="chart-grid">
         <div className="panel">
@@ -155,4 +189,11 @@ function buildRevenueSeries(bookings) {
     total += booking.price;
     return { label: `${index + 1}`, revenue: total };
   });
+}
+
+function formatCurrencyCompact(value) {
+  return `¥${new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 2,
+  }).format(Math.round(value || 0))}`;
 }

@@ -296,7 +296,7 @@ function buildRailGeojson() {
 }
 
 function createRailIndex(railGeojson) {
-  const cellSize = 0.35;
+  const cellSize = 0.18;
   const cells = new Map();
   for (const feature of railGeojson.features || []) {
     const coordinates = feature.geometry?.coordinates || [];
@@ -312,7 +312,7 @@ function createRailIndex(railGeojson) {
 
 function railGeometryBetween(from, to, railIndex) {
   const directKm = distance(from, to);
-  const margin = Math.min(3.8, Math.max(0.55, directKm / 210));
+  const margin = Math.min(5, Math.max(0.8, directKm / 150));
   const minLng = Math.min(from.lng, to.lng) - margin;
   const maxLng = Math.max(from.lng, to.lng) + margin;
   const minLat = Math.min(from.lat, to.lat) - margin;

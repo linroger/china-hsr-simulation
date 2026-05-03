@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-03T09:32:50+00:00",
+  "runId": "yearly-20260503T093240Z",
+  "source": "OceanBase annual route-day aggregate simulation",
+  "database": "chinahsr",
+  "startDate": "2026-01-01",
+  "endDate": "2026-12-31",
+  "days": 365,
+  "stationCount": 3058,
+  "routeCount": 1200,
+  "routeDayRows": 438000,
+  "totalTrainServices": 6056439,
+  "estimatedPassengers": 2850364173,
+  "estimatedRevenue": 723633492168.56,
+  "surgeDayCount": 198,
+  "workerCount": 12,
+  "cpuCount": 16,
+  "chunkDays": 8,
+  "generatedSeconds": 9.646,
+  "dailyAverages": {
+    "trainServices": 16593.0,
+    "passengers": 7809216.9,
+    "revenue": 1982557512.79
+  },
+  "calendar": [
+    {
+      "label": "Weekend + Spring Festival Chunyun",
+      "days": 12,
+      "maxDemandMultiplier": 2.301,
+      "maxPriceSurgeMultiplier": 1.505
+    },
+    {
+      "label": "Weekend + National Day golden week",
+      "days": 2,
+      "maxDemandMultiplier": 2.195,
+      "maxPriceSurgeMultiplier": 1.463
+    },
+    {
+      "label": "Weekend + Labor Day golden week",
+      "days": 2,
+      "maxDemandMultiplier": 2.03,
+      "maxPriceSurgeMultiplier": 1.42
+    },
+    {
+      "label": "Spring Festival Chunyun",
+      "days": 28,
+      "maxDemandMultiplier": 1.95,
+      "maxPriceSurgeMultiplier": 1.42
+    },
+    {
+      "label": "Weekend + New Year travel surge",
+      "days": 1,
+      "maxDemandMultiplier": 1.864,
+      "maxPriceSurgeMultiplier": 1.357
+    },
+    {
+      "label": "National Day golden week",
+      "days": 6,
+      "maxDemandMultiplier": 1.86,
+      "maxPriceSurgeMultiplier": 1.38
+    },
+    {
+      "label": "Labor Day golden week",
+      "days": 3,
+      "maxDemandMultiplier": 1.72,
+      "maxPriceSurgeMultiplier": 1.34
+    },
+    {
+      "label": "Weekend + Qingming holiday",
+      "days": 2,
+      "maxDemandMultiplier": 1.676,
+      "maxPriceSurgeMultiplier": 1.272
+    },
+    {
+      "label": "Weekend + Dragon Boat holiday",
+      "days": 2,
+      "maxDemandMultiplier": 1.605,
+      "maxPriceSurgeMultiplier": 1.24
+    },
+    {
+      "label": "New Year travel surge",
+      "days": 2,
+      "maxDemandMultiplier": 1.58,
+      "maxPriceSurgeMultiplier": 1.28
+    },
+    {
+      "label": "Weekend + Summer student travel peak",
+      "days": 18,
+      "maxDemandMultiplier": 1.51,
+      "maxPriceSurgeMultiplier": 1.187
+    },
+    {
+      "label": "Qingming holiday",
+      "days": 1,
+      "maxDemandMultiplier": 1.42,
+      "maxPriceSurgeMultiplier": 1.2
+    },
+    {
+      "label": "Weekend + Year-end travel peak",
+      "days": 3,
+      "maxDemandMultiplier": 1.416,
+      "maxPriceSurgeMultiplier": 1.145
+    },
+    {
+      "label": "Dragon Boat holiday",
+      "days": 1,
+      "maxDemandMultiplier": 1.36,
+      "maxPriceSurgeMultiplier": 1.17
+    },
+    {
+      "label": "Summer student travel peak",
+      "days": 44,
+      "maxDemandMultiplier": 1.28,
+      "maxPriceSurgeMultiplier": 1.12
+    },
+    {
+      "label": "Year-end travel peak",
+      "days": 9,
+      "maxDemandMultiplier": 1.2,
+      "maxPriceSurgeMultiplier": 1.08
+    },
+    {
+      "label": "Weekend",
+      "days": 62,
+      "maxDemandMultiplier": 1.18,
+      "maxPriceSurgeMultiplier": 1.06
+    },
+    {
+      "label": "Normal weekday",
+      "days": 167,
+      "maxDemandMultiplier": 1.0,
+      "maxPriceSurgeMultiplier": 1.0
+    }
+  ],
+  "oceanbase": {
+    "enabled": true,
+    "tables": {
+      "stations": 3058,
+      "routes": 1200,
+      "routeStops": 7261,
+      "routeSegments": 6061,
+      "simulationRuns": 1,
+      "dailyRouteServicesForRun": 438000
+    }
+  },
+  "architecture": {
+    "browserDetailedMode": "rolling-day seat-level Web Worker",
+    "yearlyPersistenceMode": "OceanBase route-day aggregate facts",
+    "rendering": "Mapbox WebGL",
+    "computeParallelism": "Python multiprocessing for annual generation; browser Web Worker for live day"
+  }
+}

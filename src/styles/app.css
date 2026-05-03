@@ -526,7 +526,9 @@ meter {
 }
 
 .realism-grid b {
-  font-size: 24px;
+  font-size: clamp(14px, 1.6vw, 24px);
+  overflow-wrap: anywhere;
+  line-height: 1.15;
 }
 
 @media (max-width: 1100px) {

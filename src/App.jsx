@@ -8,18 +8,20 @@ import BookingPanel from './visualization/BookingPanel.jsx';
 export default function App() {
   const workerRef = useRef(null);
   const [snapshot, setSnapshot] = useState(null);
+  const [yearlySummary, setYearlySummary] = useState(null);
   const [loading, setLoading] = useState('Loading generated railway database...');
   const [activeView, setActiveView] = useState('map');
-  const [speed, setSpeed] = useState(18);
+  const [speed, setSpeed] = useState(60);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const [stationsResponse, routesResponse] = await Promise.all([
+        const [stationsResponse, routesResponse, annualSummary] = await Promise.all([
           fetch('/station-data.json'),
           fetch('/route-data.json'),
+          fetchOptionalJson('/oceanbase-yearly-summary.json'),
         ]);
         if (!stationsResponse.ok || !routesResponse.ok) {
           throw new Error('Generated data is missing. Run ./init.sh or npm run prepare:data first.');
@@ -27,6 +29,7 @@ export default function App() {
         const stationData = await stationsResponse.json();
         const routeData = await routesResponse.json();
         if (cancelled) return;
+        setYearlySummary(annualSummary);
         setLoading('Starting simulation worker thread...');
         const worker = new SimulationWorkerClient({
           onSnapshot: (nextSnapshot) => {
@@ -112,11 +115,17 @@ export default function App() {
 
       <section className="workspace">
         {activeView === 'map' && <HSRMap trains={snapshot.trains} events={snapshot.events} />}
-        {activeView === 'dashboard' && <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} />}
+        {activeView === 'dashboard' && <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} yearlySummary={yearlySummary} />}
         {activeView === 'booking' && <BookingPanel snapshot={snapshot} quoteTrip={quoteTrip} bookTrip={bookTrip} />}
       </section>
     </main>
   );
+}
+
+async function fetchOptionalJson(path) {
+  const response = await fetch(`${path}?v=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) return null;
+  return response.json();
 }
 
 function LoadingScreen({ message }) {

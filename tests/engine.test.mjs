@@ -85,6 +85,22 @@ test('calendar starts on January 1 and applies route-level surge service plannin
   assert.ok(snapshot.stats.trainsPerRoute > 2);
 });
 
+test('engine rolls detailed services forward across the full-year calendar', () => {
+  const engine = new SimulationEngine({ routes: [route], seed: 33, maxTrains: 8, preloadDemand: false });
+  const initialTrainCount = engine.trains.length;
+  assert.equal(engine.snapshot().calendar.dateIso, '2026-01-01');
+  engine.setSpeed(120);
+  engine.nowMinutes = 1439.25;
+  engine.tick(1);
+  const snapshot = engine.snapshot();
+
+  assert.equal(snapshot.calendar.dateIso, '2026-01-02');
+  assert.equal(snapshot.stats.currentServiceDayNumber, 2);
+  assert.ok(snapshot.stats.cumulativeTrainServices >= initialTrainCount + engine.trains.length);
+  assert.ok(engine.trains.every((train) => train.departureMinute >= 1440 && train.departureMinute < 2880));
+  assert.equal(snapshot.bookingOptions[0].serviceDate, 'Jan 2');
+});
+
 test('no-show passengers release their seat inventory after departure', () => {
   const engine = new SimulationEngine({ routes: [route], seed: 3, maxTrains: 1 });
   const train = engine.getTrain('r1');

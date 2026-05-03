@@ -6,6 +6,7 @@ let engine = null;
 let publishTimer = null;
 let preloadTimer = null;
 let initialized = false;
+let lastPublishedServiceDayIndex = null;
 
 self.onmessage = (event) => {
   const { id, type, payload = {} } = event.data || {};
@@ -17,6 +18,7 @@ self.onmessage = (event) => {
       engine = new SimulationEngine({ ...payload, preloadDemand: payload.preloadDemand ?? false });
       engine.setSpeed(payload.speed || 18);
       initialized = true;
+      lastPublishedServiceDayIndex = null;
       postSnapshot('init');
       respond(id, { ok: true, worker: workerInfo() });
       startBackgroundPreload();
@@ -55,7 +57,10 @@ self.onmessage = (event) => {
 
 function startPublishing() {
   stopPublishing();
-  publishTimer = setInterval(() => postSnapshot('tick'), SNAPSHOT_INTERVAL_MS);
+  publishTimer = setInterval(() => {
+    ensureBackgroundPreload();
+    postSnapshot('tick');
+  }, SNAPSHOT_INTERVAL_MS);
 }
 
 function stopPublishing() {
@@ -65,14 +70,23 @@ function stopPublishing() {
 
 function postSnapshot(reason) {
   if (!engine) return;
+  const serviceDayIndex = engine.currentServiceDayIndex;
+  const includeBookingOptions = reason === 'init' || reason === 'booking' || reason === 'manual' || serviceDayIndex !== lastPublishedServiceDayIndex;
+  const snapshot = engine.snapshot({ includeBookingOptions });
+  lastPublishedServiceDayIndex = serviceDayIndex;
   self.postMessage({
     type: 'snapshot',
     reason,
     snapshot: {
-      ...engine.snapshot({ includeBookingOptions: reason === 'init' || reason === 'booking' || reason === 'manual' }),
+      ...snapshot,
       worker: workerInfo(),
     },
   });
+}
+
+function ensureBackgroundPreload() {
+  if (!engine || preloadTimer || !engine.hasPendingDemandPreload()) return;
+  startBackgroundPreload();
 }
 
 function startBackgroundPreload() {

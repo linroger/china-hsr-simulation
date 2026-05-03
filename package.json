@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "prepare:data": "node scripts/prepare-data.cjs",
+    "oceanbase:seed": "python3 scripts/oceanbase_seed.py",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "build": "vite build",
     "preview": "node scripts/serve-static.cjs",

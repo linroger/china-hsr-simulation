@@ -73,5 +73,19 @@
       "Verify the map uses smaller train markers and interpolated animation between worker snapshots"
     ],
     "passes": true
+  },
+  {
+    "id": "feature_oceanbase_full_year_persistence",
+    "category": "data",
+    "description": "Persist a full-year, uncapped China HSR route-day service simulation in OceanBase and expose annual totals in the dashboard while the browser keeps detailed rolling-day seat allocation.",
+    "steps": [
+      "Run npm run oceanbase:seed with OB_* environment variables for the local OceanBase Desktop tenant",
+      "Verify OceanBase contains station, route, stop, segment, simulation run, and daily route service tables",
+      "Verify the latest annual run covers 365 days and 438,000 route-day rows",
+      "Verify annual trains, passengers, and revenue have no cumulative cap",
+      "Verify the dashboard displays OceanBase annual totals and worker/table-count metadata",
+      "Verify the browser simulation can roll from January 1 to January 2 with a fresh detailed service day"
+    ],
+    "passes": true
   }
 ]

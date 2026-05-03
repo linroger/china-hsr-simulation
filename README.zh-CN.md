@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-7%2F7%20passing-brightgreen)](#10-测试策略)
+[![Tests](https://img.shields.io/badge/tests-10%2F10%20passing-brightgreen)](#11-测试策略)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇺🇸 **[English README](./README.md)**
@@ -18,7 +18,9 @@
 | 实时网络地图 | 运营仪表盘 | 区间感知订票 |
 |:---:|:---:|:---:|
 | ![实时地图](./screenshots/01-live-map.png) | ![仪表盘](./screenshots/02-operations-dashboard.png) | ![订票](./screenshots/03-booking-panel.png) |
-| 1,500 列车次沿 OSM 真实铁路走廊折线移动,按上座率着色。 | 实时关键指标:营收 ¥6,200 万+、客流 40.7 万+、248 列在途、3.6 分钟均延误。 | 可对任意车次任意区段询价订票;乘客下车后座位即可被复用。 |
+| 6,000 列滚动服务日明细车次沿 OSM 真实铁路走廊折线移动,按上座率着色。 | 实时指标叠加 OceanBase 年度总量:606 万列车、28.5 亿客流、¥7,236 亿营收。 | 可对任意车次任意区段询价订票;乘客下车后座位即可被复用。 |
+
+**[▶ 观看仿真视频](./screenshots/04-simulation.mp4)** — 60 秒速览实时地图、订票面板与 OceanBase 仪表盘。
 
 ---
 
@@ -38,14 +40,15 @@
 6. [性能与优化](#性能与优化)
 7. [并发模型](#并发模型)
 8. [数据管道](#数据管道)
-9. [可视化层](#可视化层)
-10. [测试策略](#10-测试策略)
-11. [项目结构](#11-项目结构)
-12. [配置与密钥处理](#12-配置与密钥处理)
-13. [技术栈](#13-技术栈)
-14. [发展规划](#14-发展规划)
-15. [免责声明与数据来源](#15-免责声明与数据来源)
-16. [许可](#16-许可)
+9. [OceanBase 年度持久化](#oceanbase-年度持久化)
+10. [可视化层](#可视化层)
+11. [测试策略](#11-测试策略)
+12. [项目结构](#12-项目结构)
+13. [配置与密钥处理](#13-配置与密钥处理)
+14. [技术栈](#14-技术栈)
+15. [发展规划](#15-发展规划)
+16. [免责声明与数据来源](#16-免责声明与数据来源)
+17. [许可](#17-许可)
 
 ---
 
@@ -55,10 +58,11 @@
 
 - **在线区间调度问题** —— 经典的"乘客下车后,这个座位能否再卖给下游乘客?"问题,以**区间重叠日历**形式建模,O(k) 检测、O(k log k) 插入、并通过确定性回归测试覆盖。
 - **收益管理 / 收益最大化** —— 多因子动态定价综合**距离里程基价**、**Sigmoid 稀缺度投标价**、**时间紧迫度**、**高峰加价**、**频次缓解**、**失约缓冲**与**价格弹性**等维度。
-- **离散事件仿真 (DES)** —— 20 Hz 时钟循环驱动 1,500 列车次跨越 1,200 条线路,内置**计划-实际延误模型**、**失约座位释放**、**车站站台压力指标**。
+- **离散事件仿真 (DES)** —— 20 Hz 时钟循环驱动 6,000 列滚动服务日明细车次跨越 1,200 条线路,内置**计划-实际延误模型**、**失约座位释放**、**车站站台压力指标**,并可随 365 天日历滚动换日。
+- **OceanBase 年度持久化** —— Python 多进程 ETL 生成全年 438,000 条线路-日期服务事实,通过 OceanBase 的 MySQL 兼容接口批量写入本机 OceanBase Desktop。
 - **空间算法** —— Haversine 大圆距离、垂直距离剪枝、按弧长参数化的折线插值、自研**0.35°×0.35° 网格哈希索引**,把生成的线路区段贴合到真实 OSM 铁路走廊上。
 - **浏览器多线程** —— 整个仿真引擎从 React/Mapbox UI 主线程**剥离至 Web Worker**;UI 与引擎之间通过强类型、Promise 化的消息总线交换 `init`、`start`、`setSpeed`、`quoteTrip`、`bookTrip`、`snapshot` 等指令。
-- **工程严谨性** —— 确定性种子伪随机数 (FNV-1a)、7 项回归测试覆盖订票语义、定价单调性、失约释放、动态需求、数据多样性,外加 `./run.sh` 一键脚本完成依赖安装、数据生成、测试、构建、上线全流程。
+- **工程严谨性** —— 确定性种子伪随机数 (FNV-1a)、10 项回归测试覆盖订票语义、定价单调性、失约释放、动态需求、换日滚动、OceanBase 年度生成、数据多样性,外加 `./run.sh` 一键脚本完成依赖安装、数据生成、测试、构建、上线全流程。
 
 > **面向蚂蚁集团、阿里巴巴、腾讯、百度、华为等公司的招聘官与工程师** —— 项目刻意保持精简(手写核心逻辑约 2,000 行),却同时覆盖了**算法、分布式系统思维、运筹优化/收益管理、全栈 React 工程、地理信息系统(GIS)与端到端产品故事**。
 
@@ -66,7 +70,7 @@
 
 ## 快速启动
 
-> **运行环境要求**:Node.js ≥ 18(已在 18/20/22 上验证)、npm,以及约 600 MB 磁盘空间。
+> **运行环境要求**:Node.js ≥ 18(已在 18/20/22 上验证)、npm、用于 OceanBase 种子脚本的 Python 3,以及约 600 MB 磁盘空间。浏览器应用无需 OceanBase 也可运行;年度持久化需要可连接的 OceanBase MySQL 模式租户与 `OB_*` 环境变量。
 
 ```bash
 git clone https://github.com/linroger/china-hsr-simulation.git
@@ -105,6 +109,7 @@ run.cmd --skip-tests
 ```bash
 npm install
 npm run prepare:data   # 仅在原始数据文件存在时执行
+OB_PASSWORD=... npm run oceanbase:seed
 npm test
 npm run build
 npm run serve          # http://127.0.0.1:5174/
@@ -119,13 +124,16 @@ npm run serve          # http://127.0.0.1:5174/
 | **车站索引规模** | 3,058 个,均带 WGS-84 坐标 |
 | **高铁服务记录** | 7,278 条 G/D/C 真实始发/终到记录 |
 | **生成仿真线路** | 1,200 条,覆盖 27 个宏观走廊与 27 个起点省份 |
-| **排班车次** | 1,500 列(平均每条线路 1.25 列) |
+| **滚动服务日明细车次** | 当前浏览器服务日 6,000 列 |
+| **OceanBase 年度车次** | 6,056,439 列,365 天累计不封顶 |
+| **OceanBase 年度客流 / 营收** | 2,850,364,173 人次 / ¥723,633,492,168.56 |
+| **OceanBase 年度线路-日期事实** | 438,000 行(365 天 × 1,200 条线路) |
 | **每列车座位定员** | 554 席(8 节编组:商务座 10 + 一等座 204 + 二等座 340) |
-| **单次仿真模拟的座席-区段总数** | 约 83 万 |
+| **滚动服务日明细座位日历** | 约 332 万个座位日历对象 |
 | **OSM 铁路特征数** | 简化后 8,000 条 LineString |
 | **铁路匹配率** | ≥ 52.7% 的生成区段成功贴合真实 OSM 走廊(其余降级为站点直线) |
-| **快照推送频率** | 250 ms / 次,从 Worker → UI |
-| **测试通过率** | 7/7(座位库存、定价、引擎、失约、动态需求、数据多样性) |
+| **快照推送频率** | 150 ms / 次,从 Worker → UI |
+| **测试通过率** | 10/10(座位库存、定价、引擎、失约、动态需求、换日滚动、OceanBase dry-run、数据多样性) |
 
 ---
 
@@ -543,6 +551,116 @@ new SimulationWorkerClient({ onSnapshot })
 
 ---
 
+## OceanBase 年度持久化
+
+> **为什么用 OceanBase?** 浏览器仿真引擎只为单个滚动服务日维护座位级明细(~6,000 列车、~330 万座位日历)。这已经是 Web Worker 堆的实用上限。若把同样精度扩展到全年 365 天,需要约 22 亿个座位对象——远超任何浏览器能承载的范围。OceanBase 通过存储**线路-日期聚合事实**(而非座位级明细)来解决这一问题,让仪表盘在展示 live 日的同时也能呈现年度总量。
+
+### OceanBase 是什么
+
+[OceanBase](https://github.com/oceanbase/oceanbase) 是由 **蚂蚁集团** 开源的**分布式 SQL 数据库**,最初为支付宝和淘宝打造。它兼容 MySQL 协议,支持 HTAP(混合事务/分析处理),并在强一致性下处理 PB 级 workload。本项目使用 **OceanBase Desktop**(或任意 MySQL 模式租户)作为分析型持久层。
+
+### 双模式架构
+
+本项目在两种互补模式下运行:
+
+| 模式 | 精度 | 规模 | 运行时 |
+|---|---|---|---|
+| **浏览器明细模式** | 座位级区间日历 | 1 个滚动服务日(~6 K 列车、~3.3 M 座位) | Web Worker @ 20 Hz |
+| **OceanBase 年度模式** | 线路-日期聚合事实 | 365 天(~606 万列车、43.8 万条线路-日期行) | Python 多进程 + 批量 INSERT |
+
+###  Schema 设计
+
+种子脚本创建一个精简的**星型 Schema**,包含 4 张维度表和 2 张事实表:
+
+```sql
+-- 维度表
+stations          (station_id PK, name, province, city, bureau, kind, tier, lng, lat)
+routes            (route_id PK, code, train_no, route_type, origin, destination, ...)
+route_stops       (route_id, stop_index PK, station_id, name, province, ...)
+route_segments    (route_id, segment_index PK, from_station, to_station, distance_km, ...)
+
+-- 事实表
+simulation_runs   (run_id PK, start_date, end_date, days, route_count, station_count,
+                   total_route_day_rows, total_train_services, estimated_passengers,
+                   estimated_revenue, surge_day_count, generated_seconds)
+daily_route_services
+  (run_id, service_date, day_index, route_id,
+   service_count, demand_multiplier, capacity_multiplier, price_surge_multiplier,
+   estimated_passengers, estimated_revenue,
+   is_weekend, is_holiday, calendar_label)
+```
+
+所有维度表使用 `ON DUPLICATE KEY UPDATE`,重复运行幂等。事实表按 `run_id` 先清空再插入,避免脏数据。
+
+### Python 多进程 ETL
+
+`scripts/oceanbase_seed.py` 是一个 798 行的 Python ETL:
+
+1. **读取** `public/route-data.json` 和 `public/station-data.json`(与浏览器共用同一套产物)。
+2. **切分** 365 天日历为 `chunk-days` 块(默认 8 天)。
+3. **派生** `multiprocessing.Pool`,工作进程数由 `CHINAHSR_WORKERS` 控制(默认 `min(CPU 核数, 12)`)。
+4. **生成** 每线路每日的服务次数、预估客流与预估营收——算法与浏览器引擎的日历逻辑(节假日、旺季、周末)**完全一致**,保证 live 日与年度计划不 diverge。
+5. **批量插入** 维度表一次,然后以 `batch_size`(默认 4,000)流式写入事实表。
+
+在 16 核 MacBook Pro 上,全年数据生成+入库仅需 **~10 秒**:
+
+```
+[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1200 route_day_rows=438000
+                 trains=6056439 passengers=2850364173 revenue=723633492168.56
+                 workers=12 db=loaded
+```
+
+### 日历逻辑一致性
+
+Python 脚本与浏览器 `SimulationEngine.js` 共享**同一套节假日/旺季日历**,因此年度事实与 live 日行为永不 diverge:
+
+| 日历事件 | Python `calendar_state()` | JS `calendarState()` |
+|---|---|---|
+| 周末 | `demand × 1.18, capacity × 1.08, price × 1.06` | 完全一致 |
+| 春运(第 14–53 天) | `demand × 1.95, capacity × 1.52, price × 1.42` | 完全一致 |
+| 国庆黄金周(第 274–281 天) | `demand × 1.86, capacity × 1.46, price × 1.38` | 完全一致 |
+| 暑运学生高峰(第 182–243 天) | `demand × 1.28, capacity × 1.16, price × 1.12` | 完全一致 |
+
+### 仪表盘集成
+
+仪表盘读取预生成的 `public/oceanbase-yearly-summary.json`(由种子脚本在 CI 环境中通过 `--skip-db` 生成)并展示:
+
+- 年度列车服务次数、客流总量、营收总量
+- OceanBase 各表行数
+- 按假期类型的日历分布
+- 工作进程/核心利用率
+
+若 JSON 缺失,仪表盘优雅降级,仅展示 live 日指标。
+
+### 配置
+
+```bash
+cp .env.example .env
+# 编辑:
+OB_HOST=127.0.0.1
+OB_PORT=2881
+OB_USER=root
+OB_PASSWORD=你的_oceanbase_租户密码
+OB_DATABASE=chinahsr
+CHINAHSR_WORKERS=12
+```
+
+运行种子脚本:
+
+```bash
+OB_PASSWORD=... python3 scripts/oceanbase_seed.py
+# 或仅生成 JSON(不连库):
+python3 scripts/oceanbase_seed.py --skip-db --days 30 --workers 4
+```
+
+### 在项目中的角色
+
+- **持久层**: 承载浏览器内存无法容纳的年度级聚合数据。
+- **分析后端**: 支持离线运力规划、营收预测与 what-if 场景 SQL 分析。
+- **企业级数据库能力展示**: 分布式 SQL、批量加载、星型 Schema 设计、维度/事实表建模、MySQL 兼容 SQL——与 **蚂蚁集团** 和 **阿里巴巴** 的大型平台工程岗位直接相关。
+
+---
+
 ## 可视化层
 
 ### Mapbox GL 地图(`HSRMap.jsx`)
@@ -584,7 +702,7 @@ new SimulationWorkerClient({ onSnapshot })
 
 ---
 
-## 10. 测试策略
+## 11. 测试策略
 
 测试金字塔刻意保持**扁平、快速、确定性、面向场景**:
 
@@ -623,7 +741,7 @@ npm test
 
 ---
 
-## 11. 项目结构
+## 12. 项目结构
 
 ```
 ChinaHSR_Simulation/
@@ -636,14 +754,17 @@ ChinaHSR_Simulation/
 ├── index.html
 ├── feature_list.json                  ← 数据化的功能清单,全部通过
 ├── handoff.md                         ← 决策与验证日志
+├── PLANS.md                           ← 当前设计切片与验证计划
 ├── agent-progress.txt                 ← 会话级修改记录
 ├── public/                            ← 已提交的预生成数据
 │   ├── station-data.json   (3,058 个车站)
 │   ├── route-data.json     (1,200 条线路 + 7,278 条记录)
+│   ├── oceanbase-yearly-summary.json
 │   ├── hsr-stations.geojson
 │   └── hsr-rails.geojson   (8,000 条 OSM 铁路特征)
 ├── scripts/
 │   ├── prepare-data.cjs               ← ETL 流水线(§8)
+│   ├── oceanbase_seed.py              ← OceanBase 全年聚合加载器
 │   └── serve-static.cjs               ← 零依赖的迷你 Node http 服务器
 ├── src/
 │   ├── main.jsx                       ← React 19 根
@@ -667,7 +788,7 @@ ChinaHSR_Simulation/
 
 ---
 
-## 12. 配置与密钥处理
+## 13. 配置与密钥处理
 
 本应用默认使用 Mapbox GL 的**公开** `pk.eyJ...` Token。公开 Mapbox Token 不含敏感作用域,可以安全地随客户端代码发布。如需替换为自己的:
 
@@ -686,7 +807,7 @@ rg "sk\.ey" .   # 必须没有命中;敏感作用域 Token 永远不进仓库
 
 ---
 
-## 13. 技术栈
+## 14. 技术栈
 
 - **React 19.2** + Hooks(`useEffect`、`useMemo`、`useRef`、`useCallback`、`useState`)
 - **Vite 8** + `@vitejs/plugin-react`,提供 ESM 开发服务器与 Rollup 代码拆分
@@ -700,18 +821,18 @@ rg "sk\.ey" .   # 必须没有命中;敏感作用域 Token 永远不进仓库
 
 ---
 
-## 14. 发展规划
+## 15. 发展规划
 
 - [ ] 算法对比页:小规模 ILP / MILP 精确最优 vs. 生产启发式,左右对比上座率与营收。
 - [ ] 场景导出/回放:把种子 + 需求曲线序列化为 JSON,任何环境下确定性回放。
 - [ ] 权威时刻表注入:若获得官方逐站时刻表,可一键替换并撤掉 `simulatedStop` 标记。
-- [ ] WebGPU compute shader 并行化整车队座位询价(目前每帧 O(列车数))。
+- [ ] 仅在未来出现规整数值内核时加入 WebGPU compute shader;当前年度规划更适合 CPU 多进程 + OceanBase 批量 I/O。
 - [ ] WebSocket 多端协同 demo:多浏览器对同一 Node.js Worker Pool 内的共享引擎并发订票。
 - [ ] 国际化(i18n)整改:目前中英文混排在 UI 字符串中。
 
 ---
 
-## 15. 免责声明与数据来源
+## 16. 免责声明与数据来源
 
 本项目**并非中国国家铁路集团(国铁集团)或 12306 的官方产品**,不连接、不复制 12306 生产系统。它是从公开数据集出发的研究级仿真:
 
@@ -723,7 +844,7 @@ rg "sk\.ey" .   # 必须没有命中;敏感作用域 Token 永远不进仓库
 
 ---
 
-## 16. 许可
+## 17. 许可
 
 [MIT](LICENSE) © 2026 Roger Lin
 

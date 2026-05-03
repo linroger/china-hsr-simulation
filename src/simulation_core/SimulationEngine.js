@@ -3,22 +3,27 @@ import { priceQuote, reconcileDemandForecast } from '../algorithms/pricing.js';
 import { haversineKm, interpolateCoord, interpolateLine } from './geo.js';
 
 const DEFAULT_SPEED_KMH = 285;
-const DEFAULT_MAX_TRAINS = 6000;
+const DEFAULT_DAILY_TRAIN_BUDGET = 6000;
 const MIN_DAILY_TRAINS_PER_ROUTE = 2;
-const SNAPSHOT_TRAIN_LIMIT = 850;
+const SNAPSHOT_TRAIN_LIMIT = 1500;
 const TRAIN_SEAT_QUOTA = 554;
+const SERVICE_YEAR_DAYS = 365;
 const SERVICE_DAY_START_YEAR = 2026;
 const SERVICE_DAY_START_MONTH = 0;
 const SERVICE_DAY_START_DAY = 1;
 
 export class SimulationEngine {
-  constructor({ stations = [], routes = [], seed = 20260502, maxTrains = DEFAULT_MAX_TRAINS, preloadDemand = true } = {}) {
+  constructor({ stations = [], routes = [], seed = 20260502, maxTrains = DEFAULT_DAILY_TRAIN_BUDGET, yearDays = SERVICE_YEAR_DAYS, preloadDemand = true } = {}) {
     this.seed = seed;
     this.stations = stations;
     this.routes = routes;
     this.nowMinutes = 8 * 60 + 20;
     this.calendar = calendarState(this.nowMinutes);
-    this.trains = this.createScheduledServices(routes, maxTrains);
+    this.currentServiceDayIndex = this.calendar.dayIndex;
+    this.dailyTrainBudget = maxTrains;
+    this.yearDays = yearDays;
+    this.autoPreloadDemand = preloadDemand;
+    this.trains = this.createScheduledServices(routes, maxTrains, this.calendar);
     this.trainById = new Map(this.trains.map((train) => [train.id, train]));
     this.bookingOptions = this.createBookingOptions();
     this.bookings = [];
@@ -38,17 +43,23 @@ export class SimulationEngine {
       trainCount: this.trains.length,
       routeCount: this.routes.length,
       seatQuotaPerTrain: TRAIN_SEAT_QUOTA,
+      cumulativeTrainServices: this.trains.length,
+      currentServiceDayIndex: this.currentServiceDayIndex,
+      currentServiceDayNumber: this.currentServiceDayIndex + 1,
+      simulationYearDays: this.yearDays,
+      detailedDayTrainBudget: this.dailyTrainBudget,
       ...routeServiceStats,
     };
     this.tickCounter = 0;
+    this.lastTickMs = null;
     if (preloadDemand) this.preloadDemand();
     this.tick(0);
   }
 
-  createScheduledServices(routes, maxTrains) {
+  createScheduledServices(routes, maxTrains, calendar = this.calendar) {
     if (!routes.length) return [];
     const trains = [];
-    const plans = allocateDailyServices(routes, maxTrains, this.calendar);
+    const plans = allocateDailyServices(routes, maxTrains, calendar);
     let index = 0;
     for (const plan of plans) {
       for (let serviceIndex = 0; serviceIndex < plan.serviceCount; serviceIndex += 1) {
@@ -61,13 +72,14 @@ export class SimulationEngine {
 
   createTrain(route, index, serviceIndex = 0, serviceCount = 1, calendar = this.calendar) {
     const inventory = new SeatInventory(route.stops);
-    const departureMinute = scheduledDepartureMinute(route, serviceIndex, serviceCount, index);
+    const departureMinute = calendar.dayIndex * 1440 + scheduledDepartureMinute(route, serviceIndex, serviceCount, index);
     const plannedRuntimes = route.segments.map((segment, segmentIndex) => plannedSegmentMinutes(route, segment, segmentIndex));
     const segmentMinutes = route.segments.map((segment, segmentIndex) => realisticSegmentMinutes(route, segment, segmentIndex, index, serviceIndex, calendar));
     const serviceSuffix = serviceIndex > 0 ? `-${serviceIndex + 1}` : '';
+    const dayPrefix = calendar.dayIndex > 0 ? `day${calendar.dayIndex + 1}-` : '';
     const delayMinutes = Math.max(0, Math.round(segmentMinutes.reduce((sum, minutes) => sum + minutes, 0) - plannedRuntimes.reduce((sum, minutes) => sum + minutes, 0)));
     return {
-      id: `${route.id}${serviceSuffix}`,
+      id: `${dayPrefix}${route.id}${serviceSuffix}`,
       routeId: route.id,
       code: serviceIndex > 0 ? `${route.code}.${serviceIndex + 1}` : route.code,
       type: route.type,
@@ -119,6 +131,10 @@ export class SimulationEngine {
     };
   }
 
+  hasPendingDemandPreload() {
+    return this.preloadCursor < this.trains.length;
+  }
+
   preloadTrainDemand(train) {
     const demandIntensity = routeDemandIntensity(train);
     const calendarDemand = train.calendar?.demandMultiplier || this.calendar.demandMultiplier || 1;
@@ -163,7 +179,10 @@ export class SimulationEngine {
 
   loop() {
     if (!this.running) return;
-    this.tick(1);
+    const nowMs = performance.now();
+    const elapsedSec = this.lastTickMs ? Math.min(0.5, (nowMs - this.lastTickMs) / 1000) : 0.1;
+    this.lastTickMs = nowMs;
+    this.tick(elapsedSec);
     this.callbacks.onUpdate?.(this.snapshot());
     this.timer = setTimeout(() => this.loop(), 1000 / 20);
   }
@@ -171,12 +190,38 @@ export class SimulationEngine {
   tick(realSeconds = 1) {
     this.nowMinutes += realSeconds * this.speed / 60;
     this.calendar = calendarState(this.nowMinutes);
+    if (this.calendar.dayIndex >= this.yearDays) {
+      this.stats.fullYearCompleted = true;
+      this.nowMinutes = this.yearDays * 1440 - 1;
+      this.calendar = calendarState(this.nowMinutes);
+      this.stop();
+      return;
+    }
+    if (this.calendar.dayIndex !== this.currentServiceDayIndex) {
+      this.advanceServiceDay(this.calendar);
+    }
     for (const train of this.trains) this.updateTrain(train);
     this.tickCounter += 1;
     if (realSeconds > 0 && this.tickCounter % 6 === 0) {
       const requestCount = Math.round(14 * (this.calendar?.demandMultiplier || 1));
       this.sellRealtimeDemand(requestCount);
     }
+  }
+
+  advanceServiceDay(calendar) {
+    this.currentServiceDayIndex = calendar.dayIndex;
+    this.trains = this.createScheduledServices(this.routes, this.dailyTrainBudget, calendar);
+    this.trainById = new Map(this.trains.map((train) => [train.id, train]));
+    this.bookingOptions = this.createBookingOptions();
+    this.preloadCursor = 0;
+    const routeServiceStats = summarizeRouteServices(this.trains, this.routes);
+    this.stats.trainCount = this.trains.length;
+    this.stats.currentServiceDayIndex = this.currentServiceDayIndex;
+    this.stats.currentServiceDayNumber = this.currentServiceDayIndex + 1;
+    this.stats.cumulativeTrainServices += this.trains.length;
+    Object.assign(this.stats, routeServiceStats);
+    this.logEvent('calendar', `${calendar.dateLabel} ${calendar.dayName} service day opened with ${this.trains.length.toLocaleString()} detailed trains.`);
+    if (this.autoPreloadDemand) this.preloadDemand();
   }
 
   sellRealtimeDemand(requestCount = 6) {
@@ -360,6 +405,7 @@ export class SimulationEngine {
     };
     train.bookings.push(booking);
     this.bookings.push(booking);
+    if (this.bookings.length > 400) this.bookings = this.bookings.slice(-400);
     this.stats.totalRevenue += booking.price;
     this.stats.totalBookings += 1;
     this.stats.totalPassengers += groupSize;
@@ -404,6 +450,11 @@ export class SimulationEngine {
         calendarDemandMultiplier: calendar.demandMultiplier,
         calendarCapacityMultiplier: calendar.capacityMultiplier,
         calendarPriceSurgeMultiplier: calendar.priceSurgeMultiplier,
+        currentServiceDayNumber: this.stats.currentServiceDayNumber,
+        simulationYearDays: this.stats.simulationYearDays,
+        cumulativeTrainServices: this.stats.cumulativeTrainServices,
+        detailedDayTrainBudget: this.stats.detailedDayTrainBudget,
+        fullYearCompleted: this.stats.fullYearCompleted || false,
         activeTrains: serialized.filter((train) => train.status === 'running').length,
         scheduledTrains: serialized.filter((train) => train.status === 'scheduled').length,
         completedTrains: serialized.filter((train) => train.status === 'completed').length,
@@ -453,8 +504,11 @@ function allocateDailyServices(routes, maxTrains, calendar) {
     desired: serviceCountForRoute(route, calendar),
   }));
   const minTotal = routes.length * MIN_DAILY_TRAINS_PER_ROUTE;
-  const effectiveMax = Math.max(minTotal, maxTrains || DEFAULT_MAX_TRAINS);
   const desiredTotal = plans.reduce((sum, plan) => sum + plan.desired, 0);
+  if (maxTrains === null || maxTrains === undefined || maxTrains === Infinity) {
+    return plans.map((plan) => ({ route: plan.route, serviceCount: plan.desired }));
+  }
+  const effectiveMax = Math.max(minTotal, maxTrains || DEFAULT_DAILY_TRAIN_BUDGET);
   if (desiredTotal <= effectiveMax) {
     return plans.map((plan) => ({ route: plan.route, serviceCount: plan.desired }));
   }
@@ -669,9 +723,18 @@ function selectVisibleTrains(trains, limit) {
   const active = trains.filter((train) => train.status === 'running');
   const scheduled = trains.filter((train) => train.status === 'scheduled' && train.minutesToDeparture <= 120);
   const completed = trains.filter((train) => train.status === 'completed').slice(-60);
-  return [...active, ...scheduled, ...completed]
-    .sort((a, b) => statusRank(a.status) - statusRank(b.status) || Math.abs(a.minutesToDeparture) - Math.abs(b.minutesToDeparture))
-    .slice(0, limit);
+  // Always include all active (running) trains; they must never be excluded
+  if (active.length >= limit) {
+    return active
+      .sort((a, b) => (b.currentSegmentIndex / Math.max(1, b.segments?.length || 1)) - (a.currentSegmentIndex / Math.max(1, a.segments?.length || 1)))
+      .slice(0, limit);
+  }
+  const remaining = limit - active.length;
+  const scheduledSlice = scheduled
+    .sort((a, b) => a.minutesToDeparture - b.minutesToDeparture)
+    .slice(0, Math.min(remaining, scheduled.length));
+  const completedSlice = completed.slice(-Math.min(remaining - scheduledSlice.length, 60));
+  return [...active, ...scheduledSlice, ...completedSlice];
 }
 
 function statusRank(status) {

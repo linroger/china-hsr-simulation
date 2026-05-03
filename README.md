@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-7%2F7%20passing-brightgreen)](#7-testing-strategy)
+[![Tests](https://img.shields.io/badge/tests-10%2F10%20passing-brightgreen)](#11-testing-strategy)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇨🇳 **[中文版 README](./README.zh-CN.md)**
@@ -18,7 +18,9 @@
 | Live Network Map | Operations Dashboard | Segment-aware Booking |
 |:---:|:---:|:---:|
 | ![Live Map](./screenshots/01-live-map.png) | ![Dashboard](./screenshots/02-operations-dashboard.png) | ![Booking](./screenshots/03-booking-panel.png) |
-| 1,500 scheduled services moving along OSM rail-corridor polylines, color-coded by load factor. | Live KPIs: ¥62M+ revenue, 407K+ passengers, 248 active trains, 3.6 min avg delay. | Quote/book any segment of any train; seats reused after passengers alight. |
+| 6,000 rolling-day detailed services moving along OSM rail-corridor polylines, color-coded by load factor. | Live KPIs plus OceanBase annual totals: 6.06M trains, 2.85B passengers, ¥723.6B revenue. | Quote/book any segment of any train; seats reused after passengers alight. |
+
+**[▶ Watch the simulation video](./screenshots/04-simulation.mp4)** — 60-second walkthrough of the live map, booking panel, and OceanBase dashboard.
 
 ---
 
@@ -38,14 +40,15 @@
 6. [Performance & optimization](#performance--optimization)
 7. [Concurrency model](#concurrency-model)
 8. [Data pipeline](#data-pipeline)
-9. [Visualization layer](#visualization-layer)
-10. [Testing strategy](#testing-strategy)
-11. [Project structure](#project-structure)
-12. [Configuration & secret handling](#configuration--secret-handling)
-13. [Tech stack](#tech-stack)
-14. [Roadmap](#roadmap)
-15. [Disclaimer & data provenance](#disclaimer--data-provenance)
-16. [License](#license)
+9. [OceanBase annual persistence](#oceanbase-annual-persistence)
+10. [Visualization layer](#visualization-layer)
+11. [Testing strategy](#testing-strategy)
+12. [Project structure](#project-structure)
+13. [Configuration & secret handling](#configuration--secret-handling)
+14. [Tech stack](#tech-stack)
+15. [Roadmap](#roadmap)
+16. [Disclaimer & data provenance](#disclaimer--data-provenance)
+17. [License](#license)
 
 ---
 
@@ -55,10 +58,11 @@ This repository is a small but uncompromising attempt to model how a **nationwid
 
 - **Online interval scheduling** — the classic *can a seat be re-sold to a downstream passenger?* problem, solved as an interval-overlap calendar with O(k) check, O(k log k) insertion, and tested deterministically.
 - **Revenue management / yield management** — multi-factor dynamic pricing combining distance fares, sigmoid-scarcity bid prices, time-to-departure pressure, peak surcharges, frequency relief, no-show buffers, and price elasticity.
-- **Discrete-event simulation (DES)** — a 20 Hz tick loop driving 1,500 train services across 1,200 routes, with planned-vs-actual delay modeling, no-show seat release, and station-pressure metrics.
+- **Discrete-event simulation (DES)** — a 20 Hz tick loop driving 6,000 detailed rolling-day train services across 1,200 routes, with planned-vs-actual delay modeling, no-show seat release, station-pressure metrics, and service-day rollover through the 365-day calendar.
+- **OceanBase annual persistence** — a multiprocessing Python ETL creates 438,000 route-day service facts for a full year and bulk-loads them into OceanBase Desktop through its MySQL-compatible interface.
 - **Spatial algorithms** — Haversine great-circle distance, perpendicular-distance pruning, polyline arc-length interpolation, and a custom **0.35°×0.35° grid hash index** that snaps generated route segments onto real OSM rail corridors.
 - **Multithreading in the browser** — the entire simulation engine is moved off the React/Mapbox UI thread into a Web Worker; UI ↔ engine communicate through a typed promise-based message bus that handles `init`, `start`, `setSpeed`, `quoteTrip`, `bookTrip`, and `snapshot` traffic.
-- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 7 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, and data diversity, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
+- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 10 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, OceanBase annual generation, and data diversity, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
 
 > **Designed for recruiters and engineers at Ant Group, Alibaba, Tencent, Baidu, Huawei** — the codebase is intentionally small (~2,000 LoC of hand-written logic) yet covers algorithms, distributed-systems reasoning, OR/yield management, full-stack TypeScript-equivalent React, GIS, and an end-to-end product story.
 
@@ -66,7 +70,7 @@ This repository is a small but uncompromising attempt to model how a **nationwid
 
 ## Quick start
 
-> **Requirements:** Node.js ≥ 18 (works with 18/20/22), npm, and ~600 MB of disk space.
+> **Requirements:** Node.js ≥ 18 (works with 18/20/22), npm, Python 3 for the OceanBase seed script, and ~600 MB of disk space. The browser app can run without OceanBase; annual persistence requires a reachable OceanBase MySQL-mode tenant and `OB_*` environment variables.
 
 ```bash
 git clone https://github.com/linroger/china-hsr-simulation.git
@@ -105,6 +109,7 @@ run.cmd --skip-tests
 ```bash
 npm install
 npm run prepare:data   # only if upstream CSV/GeoJSON sources exist
+OB_PASSWORD=... npm run oceanbase:seed
 npm test
 npm run build
 npm run serve          # http://127.0.0.1:5174/
@@ -119,13 +124,16 @@ npm run serve          # http://127.0.0.1:5174/
 | **Stations indexed** | 3,058 with WGS-84 coordinates |
 | **HSR service records** | 7,278 real Chinese train OD records (G/D/C trains) |
 | **Generated simulation routes** | 1,200 across 27 macro-corridors and 27 origin-provinces |
-| **Scheduled train services** | 1,500 (1.25 trains/route average) |
+| **Rolling-day detailed train services** | 6,000 for the active browser service day |
+| **OceanBase annual train services** | 6,056,439 across 365 days, uncapped cumulatively |
+| **OceanBase annual passengers / revenue** | 2,850,364,173 passengers / ¥723,633,492,168.56 |
+| **OceanBase annual route-day facts** | 438,000 rows (365 days × 1,200 routes) |
 | **Seat quota per train** | 554 (10 商务座 + 204 一等座 + 340 二等座 in 8-car formation) |
-| **Total seat-segments simulated** | ~830,000 per session |
+| **Detailed seat objects in rolling day** | ~3.32 million seat calendars for the active service day |
 | **OSM rail-corridor features** | 8,000 LineString features after simplification |
 | **Rail-matched route segments** | ≥ 52.7% snapped to real OSM corridors (rest fall back to station chords) |
-| **Snapshot interval** | 250 ms from worker → UI |
-| **Tests** | 7/7 passing (booking, pricing, engine, no-show, live demand, data diversity) |
+| **Snapshot interval** | 150 ms from worker → UI |
+| **Tests** | 10/10 passing (booking, pricing, engine, no-show, live demand, day rollover, OceanBase dry-run, data diversity) |
 
 ---
 
@@ -543,6 +551,116 @@ The pipeline is **deterministic and idempotent** — given the same raw inputs, 
 
 ---
 
+## OceanBase annual persistence
+
+> **Why OceanBase?** The browser simulation engine keeps seat-level detail for a single rolling service day (~6,000 trains, ~3.3 M seat calendars). That is already the practical limit of a Web Worker heap. A full 365-day horizon with the same fidelity would need ~2.2 B seat objects — far beyond what any browser can hold. OceanBase solves this by storing **route-day aggregate facts** (not seat-level detail) for the entire year, giving the dashboard annual totals alongside the live day.
+
+### What OceanBase is
+
+[OceanBase](https://github.com/oceanbase/oceanbase) is an open-source **distributed SQL database** originally built by **Ant Group** to power Alipay and Taobao. It is wire-compatible with MySQL, supports HTAP (Hybrid Transactional/Analytical Processing), and handles petabyte-scale workloads with strong consistency. For this project we use **OceanBase Desktop** (or any MySQL-mode tenant) as the analytical persistence layer.
+
+### Dual-mode architecture
+
+The project operates in two complementary modes:
+
+| Mode | Fidelity | Scale | Runtime |
+|---|---|---|---|
+| **Browser detailed mode** | Seat-level interval calendars | 1 rolling day (~6 K trains, ~3.3 M seats) | Web Worker at 20 Hz |
+| **OceanBase annual mode** | Route-day aggregate facts | 365 days (~6.06 M trains, 438 K route-day rows) | Python multiprocessing + bulk INSERT |
+
+### Schema design
+
+The seed script creates a small **star schema** with four dimension tables and two fact tables:
+
+```sql
+-- Dimension tables
+stations          (station_id PK, name, province, city, bureau, kind, tier, lng, lat)
+routes            (route_id PK, code, train_no, route_type, origin, destination, ...)
+route_stops       (route_id, stop_index PK, station_id, name, province, ...)
+route_segments    (route_id, segment_index PK, from_station, to_station, distance_km, ...)
+
+-- Fact tables
+simulation_runs   (run_id PK, start_date, end_date, days, route_count, station_count,
+                   total_route_day_rows, total_train_services, estimated_passengers,
+                   estimated_revenue, surge_day_count, generated_seconds)
+daily_route_services
+  (run_id, service_date, day_index, route_id,
+   service_count, demand_multiplier, capacity_multiplier, price_surge_multiplier,
+   estimated_passengers, estimated_revenue,
+   is_weekend, is_holiday, calendar_label)
+```
+
+All dimension tables use `ON DUPLICATE KEY UPDATE` so repeated runs are idempotent. The fact table is wiped per `run_id` before insertion to avoid stale data.
+
+### Python multiprocessing ETL
+
+`scripts/oceanbase_seed.py` is a 798-line Python ETL that:
+
+1. **Reads** `public/route-data.json` and `public/station-data.json` (the same artifacts the browser uses).
+2. **Partitions** the 365-day calendar into `chunk-days` chunks (default 8 days).
+3. **Spawns** a `multiprocessing.Pool` with `CHINAHSR_WORKERS` workers (default = `min(CPU count, 12)`).
+4. **Generates** per-route daily service counts, passenger estimates, and revenue estimates using the same calendar logic as the browser engine (holidays, peak seasons, weekends) — ensuring consistency between the live day and the annual plan.
+5. **Batch-inserts** dimension tables once, then streams fact-table rows in `batch_size` chunks (default 4,000).
+
+The whole year completes in **~10 seconds** on a 16-core MacBook Pro:
+
+```
+[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1200 route_day_rows=438000
+                 trains=6056439 passengers=2850364173 revenue=723633492168.56
+                 workers=12 db=loaded
+```
+
+### Calendar logic consistency
+
+The Python script and the browser `SimulationEngine.js` share the **same holiday/peak calendar** so annual facts and live-day behaviour never diverge:
+
+| Calendar event | Python `calendar_state()` | JS `calendarState()` |
+|---|---|---|
+| Weekend | `demand × 1.18, capacity × 1.08, price × 1.06` | identical |
+| Spring Festival Chunyun (days 14–53) | `demand × 1.95, capacity × 1.52, price × 1.42` | identical |
+| National Day golden week (days 274–281) | `demand × 1.86, capacity × 1.46, price × 1.38` | identical |
+| Summer student peak (days 182–243) | `demand × 1.28, capacity × 1.16, price × 1.12` | identical |
+
+### Dashboard integration
+
+The Dashboard reads the pre-generated `public/oceanbase-yearly-summary.json` (produced by the seed script with `--skip-db` for CI environments) and renders:
+
+- Annual train services, passengers, and revenue
+- OceanBase table row counts
+- Calendar breakdown by holiday type
+- Worker/core utilization
+
+If the JSON is missing, the dashboard gracefully degrades to showing only live-day metrics.
+
+### Configuration
+
+```bash
+cp .env.example .env
+# Edit:
+OB_HOST=127.0.0.1
+OB_PORT=2881
+OB_USER=root
+OB_PASSWORD=your_oceanbase_tenant_password
+OB_DATABASE=chinahsr
+CHINAHSR_WORKERS=12
+```
+
+Run the seed:
+
+```bash
+OB_PASSWORD=... python3 scripts/oceanbase_seed.py
+# Or dry-run (no DB, generates JSON only):
+python3 scripts/oceanbase_seed.py --skip-db --days 30 --workers 4
+```
+
+### Role in the project
+
+- **Persistence layer**: Holds annual-scale aggregates that don't fit in browser memory.
+- **Analytical backend**: Supports offline capacity planning, revenue forecasting, and what-if scenario analysis via SQL.
+- **Enterprise DB demonstration**: Shows distributed SQL, bulk loading, star-schema design, dimension/fact table modelling, and MySQL-compatible SQL — directly relevant to large-scale platform engineering roles at **Ant Group** and **Alibaba**.
+
+---
+
 ## Visualization layer
 
 ### Mapbox GL map (`HSRMap.jsx`)
@@ -636,14 +754,17 @@ ChinaHSR_Simulation/
 ├── index.html
 ├── feature_list.json                  ← spec-as-data, every feature passing
 ├── handoff.md                         ← decisions & verification log
+├── PLANS.md                           ← active design slices and verification plan
 ├── agent-progress.txt                 ← session-by-session changelog
 ├── public/                            ← committed data artifacts
 │   ├── station-data.json   (3,058 stations)
 │   ├── route-data.json     (1,200 routes + 7,278 records)
+│   ├── oceanbase-yearly-summary.json
 │   ├── hsr-stations.geojson
 │   └── hsr-rails.geojson   (8,000 OSM rail features)
 ├── scripts/
 │   ├── prepare-data.cjs               ← ETL pipeline (§8)
+│   ├── oceanbase_seed.py              ← OceanBase 365-day aggregate loader
 │   └── serve-static.cjs               ← tiny zero-dep Node http server
 ├── src/
 │   ├── main.jsx                       ← React 19 root
@@ -705,7 +826,7 @@ rg "sk\.ey" .   # must produce no matches; secret-scoped tokens never enter the 
 - [ ] Algorithm comparison page: ILP / MILP exact small-instance optimization vs. the production heuristic, with side-by-side load factor & revenue charts.
 - [ ] Scenario export/replay: serialize seed + demand profile to a JSON file, replay deterministically anywhere.
 - [ ] Authoritative timetable ingestion: when a stop-by-stop China Railways timetable becomes available, drop in the full schedule and remove the `simulatedStop` flag.
-- [ ] WebGPU compute shader for parallel seat-quote across the entire scheduled fleet (currently O(trains) per render).
+- [ ] WebGPU compute shader only for a future regular numeric kernel; current annual planning is branch-heavy and is faster/safer as CPU multiprocessing plus OceanBase bulk I/O.
 - [ ] WebSocket multi-client demo: multiple browsers booking against the same shared engine running in a Node.js worker pool.
 - [ ] Internationalisation pass (i18n strings extracted; CN labels are currently hard-coded next to EN).
 
