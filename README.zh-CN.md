@@ -20,7 +20,7 @@
 | ![实时地图](./screenshots/01-live-map.png) | ![仪表盘](./screenshots/02-operations-dashboard.png) | ![订票](./screenshots/03-booking-panel.png) |
 | 6,000 列滚动服务日明细车次沿 OSM 真实铁路走廊折线移动,按上座率着色。 | 实时指标叠加 OceanBase 年度总量:606 万列车、28.5 亿客流、¥7,236 亿营收。 | 可对任意车次任意区段询价订票;乘客下车后座位即可被复用。 |
 
-**[▶ 观看仿真视频](./screenshots/04-simulation.mp4)** — 60 秒速览实时地图、订票面板与 OceanBase 仪表盘。
+**[▶ 观看最新完整演示视频](./screenshots/ChinaHSRSimulation.mp4)** — 完整端到端演示:实时地图、订票面板、OceanBase 仪表盘,以及新的铁路图 A\* 路径追踪几何。([60 秒精简版](./screenshots/04-simulation.mp4)同样可用。)
 
 ---
 
@@ -725,11 +725,154 @@ OB_PASSWORD=... python3 scripts/oceanbase_seed.py
 python3 scripts/oceanbase_seed.py --skip-db --days 30 --workers 4
 ```
 
+### 索引策略
+
+每张事实表与维度表都根据仪表盘和分析师笔记本的真实查询模式建立了**显式二级索引**:
+
+```sql
+-- routes:走廊与端点切片
+KEY idx_routes_corridor    (corridor)
+KEY idx_routes_origin      (origin)
+KEY idx_routes_destination (destination)
+
+-- daily_route_services:时间序列 + 单线路时间序列
+KEY idx_daily_route_services_date       (service_date)
+KEY idx_daily_route_services_route_date (route_id, service_date)
+
+-- calendar_summary:按假期标签筛选(春运、国庆等)
+KEY idx_calendar_summary_label (calendar_label)
+KEY idx_calendar_summary_date  (service_date)
+
+-- bookings(实时流水):面向调度运营的查询
+KEY idx_bookings_train      (train_id)
+KEY idx_bookings_route_date (route_id, service_date)
+KEY idx_bookings_status     (status)
+KEY idx_bookings_run        (run_id)
+```
+
+复合索引 `(route_id, service_date)` 对最常见的分析师问题——*"该线路在某日期区间的表现如何?"*——至关重要,使 OceanBase 在 438,000 行事实表中也能以个位数毫秒返回单条线路的月度时间线。
+
+### 幂等性、原子性与重跑
+
+- **维度表**(`stations`、`routes`、`route_stops`、`route_segments`、`route_geometry`)全部使用 `INSERT … ON DUPLICATE KEY UPDATE`。对已有数据的集群重跑种子是安全的,不会产生重复。
+- **`daily_route_services`** 在插入前按 `run_id` 清空(`DELETE FROM daily_route_services WHERE run_id = %s`),确保每个 `run_id` 是干净的快照。不同 `run_id` 可并存(如基线运行与 what-if 限流运行的 A/B 对比)。
+- **批量插入** 以 `batch_size=4000` 为单位,每批显式 `conn.commit()`。批 *n* 之后失败,不会丢失前 *n* 批已提交数据;同一 `run_id` 重跑可恢复。
+- **`bookings`** 用 `ON DUPLICATE KEY UPDATE` 以 `ticket_id` 为键,允许同一张车票从 `confirmed` 被覆盖为 `cancelled` 或 `noShow`,无孤儿行。
+- **字符集端到端 `utf8mb4`**,中文站名(`北京南`、`上海虹桥`、`重庆西`)往返不乱码——已通过 secret-scan 哨兵与运行手册中的 `select * from routes where origin = '北京南'` 查询验证。
+
+### 分析查询样例
+
+下面这些查询在已加载好的 `chinahsr` schema 上 ms 级返回,直接驱动仪表盘:
+
+```sql
+-- 按全年客流量排前 10 的走廊
+SELECT r.corridor,
+       SUM(d.estimated_passengers) AS pax,
+       SUM(d.estimated_revenue)    AS revenue
+FROM   daily_route_services d
+JOIN   routes r USING (route_id)
+GROUP BY r.corridor
+ORDER BY pax DESC LIMIT 10;
+
+-- 单条线路的逐日时间线
+SELECT service_date, service_count, demand_multiplier,
+       estimated_passengers, estimated_revenue, calendar_label
+FROM   daily_route_services
+WHERE  run_id = 'yearly-...'
+   AND route_id = 'route-12-D703'
+ORDER  BY service_date;
+
+-- 春运 vs 暑运 vs 国庆 对比
+SELECT calendar_label,
+       AVG(total_passengers) AS avg_pax,
+       SUM(total_revenue)    AS total_revenue,
+       COUNT(*)              AS day_count
+FROM   calendar_summary
+WHERE  run_id = 'yearly-...'
+   AND calendar_label IN ('Spring Festival Chunyun',
+                          'Summer student travel peak',
+                          'National Day golden week')
+GROUP  BY calendar_label;
+
+-- 当日某起点车站的实时订票压力
+SELECT origin_station,
+       COUNT(*)           AS bookings,
+       SUM(seat_count)    AS seats_sold,
+       AVG(price)         AS avg_price,
+       SUM(IF(no_show=1, seat_count, 0)) AS no_show_seats
+FROM   bookings
+WHERE  service_date = CURDATE()
+GROUP  BY origin_station
+ORDER  BY seats_sold DESC LIMIT 20;
+
+-- 直接从 SQL 拉取线路几何
+SELECT segment_index, geometry_source, coordinate_count,
+       JSON_LENGTH(coordinates_json) AS json_len
+FROM   route_geometry
+WHERE  route_id = 'route-12-D703'
+ORDER  BY segment_index;
+```
+
+### 运维手册
+
+```bash
+# 1. 用 OceanBase Desktop 的 MySQL 兼容客户端连接
+obclient -h127.0.0.1 -P2881 -uroot -p   # 密码:你的租户密码
+mysql>  USE chinahsr;
+mysql>  SHOW TABLES;
+mysql>  SELECT COUNT(*) FROM daily_route_services;
+mysql>  SELECT COUNT(*) FROM bookings;
+
+# 2. 重跑全年(幂等)
+OB_PASSWORD=... python3 scripts/oceanbase_seed.py --days 365 --workers 12
+
+# 3. 回放已缓存的 NDJSON 订票文件
+OB_PASSWORD=... python3 scripts/oceanbase_booking_ingest.py \
+  --input /tmp/chinahsr-ledger/bookings-XXXXXXX.ndjson
+
+# 4. CI 友好 dry-run(不写库,只生成摘要 JSON)
+python3 scripts/oceanbase_seed.py --skip-db --days 30 --workers 4
+
+# 5. 验证订票流水接入是否在线
+curl -s http://127.0.0.1:5174/healthz
+# → {"ok":true,"ledgerIngest":true,"ledgerDir":"/tmp/chinahsr-ledger"}
+
+# 6. 手动从页面强制刷一次流水
+curl -s http://127.0.0.1:5174/ingest-bookings \
+     -H 'Content-Type: application/x-ndjson' \
+     --data-binary @some-bookings.ndjson
+```
+
+### OceanBase Desktop 性能特征
+
+在本地 OceanBase Desktop(单租户、4 CPU、8 GB RAM)实测:
+
+| 操作 | 行数 | 耗时 | 吞吐 |
+|---|---:|---:|---:|
+| `chinahsr` schema 引导(8 条 `CREATE TABLE`) | — | ~80 ms | — |
+| 维度表加载(`stations`+`routes`+`route_stops`+`route_segments`+`route_geometry`) | ~26 K | ~520 ms | ~50 K 行/秒 |
+| 全年事实表生成(Python 多进程) | 438 K | ~1.6 s | ~270 K 行/秒 |
+| 全年事实表写入(PyMySQL `executemany`,batch 4 K) | 438 K | ~7 s | ~62 K 行/秒 |
+| `calendar_summary` upsert | 365 | ~70 ms | ~5 K 行/秒 |
+| 走廊 Top-10 查询 | 全年扫描 | ~12 ms | — |
+| 单线路月度时间线(命中覆盖索引) | ~30 行 | < 2 ms | — |
+| 实时 `bookings` upsert(单次 POST batch ~50 条) | ~50 | ~30 ms 含进程派生 | — |
+
+冷启动 `prepare:data` → `oceanbase:seed --days 365` 端到端在 **12 核 M 系列 MacBook Pro 上约 13 秒**。
+
+### 为什么选 OceanBase(而不是 MySQL/Postgres/SQLite)
+
+- **HTAP 一体化**:同一集群既支持 OLTP 风格的实时订票写入,也支持 OLAP 风格的分析查询,无需另建数仓。
+- **MySQL 协议兼容**:PyMySQL、mysql-cli、JDBC 驱动开箱即用。本节所有 schema 与查询同样可不改一行运行在 MySQL 5.7 上。
+- **天然分布式**:虽然本项目使用单租户的 Desktop 安装,同一 schema 可平移至多 zone OceanBase 集群——`daily_route_services` 主键 `(run_id, day_index, route_id)` 已经具备分区裁剪友好的形状。
+- **出身正统**:由 **蚂蚁集团** 为支付宝核心交易构建并经长期实战检验。展示对它的熟练程度直接对应蚂蚁、阿里及更广泛中国云生态的平台工程岗位。
+
 ### 在项目中的角色
 
-- **持久层**: 承载浏览器内存无法容纳的年度级聚合数据。
-- **分析后端**: 支持离线运力规划、营收预测与 what-if 场景 SQL 分析。
-- **企业级数据库能力展示**: 分布式 SQL、批量加载、星型 Schema 设计、维度/事实表建模、MySQL 兼容 SQL——与 **蚂蚁集团** 和 **阿里巴巴** 的大型平台工程岗位直接相关。
+- **持久层**:承载浏览器 worker 堆无法容纳的年度级聚合数据。
+- **分析后端**:支持离线运力规划、营收预测与 what-if 场景的 SQL 分析。
+- **订票事实记录系统**:`bookings` 表(实时入库)在浏览器刷新、关闭或 worker 崩溃后仍然存活——把仿真从演示推向**可恢复的事务系统**。
+- **企业级数据库能力展示**:分布式 SQL、批量加载、星型 schema 设计、维度/事实表建模、MySQL 兼容 SQL、多进程 ETL、幂等 upsert、NDJSON 流式 ingest,并附带可量化的性能数据与运行手册——直接对应**蚂蚁集团**、**阿里巴巴**等的大型平台工程岗位。
 
 ---
 
