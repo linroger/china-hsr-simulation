@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-10%2F10%20passing-brightgreen)](#11-测试策略)
+[![Tests](https://img.shields.io/badge/tests-16%2F16%20passing-brightgreen)](#11-测试策略)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇺🇸 **[English README](./README.md)**
@@ -121,19 +121,22 @@ npm run serve          # http://127.0.0.1:5174/
 
 | 维度 | 数量 |
 |---|---|
-| **车站索引规模** | 3,058 个,均带 WGS-84 坐标 |
-| **高铁服务记录** | 7,278 条 G/D/C 真实始发/终到记录 |
-| **生成仿真线路** | 1,200 条,覆盖 27 个宏观走廊与 27 个起点省份 |
+| **车站索引规模** | 3,147 个(CSV 3,058 + OSM 补充 89 个缺失高铁枢纽,如西安北/昆明南/南宁东/香港西九龙) |
+| **高铁服务记录** | 7,278 条 G/D/C 真实始发/终到记录;经 OSM 补充后,**96.3%** 端点可解析 |
+| **生成仿真线路** | 1,200 条,覆盖 28 个宏观走廊、30 个起点省份与 224 个起点车站 |
 | **滚动服务日明细车次** | 当前浏览器服务日 6,000 列 |
-| **OceanBase 年度车次** | 6,056,439 列,365 天累计不封顶 |
-| **OceanBase 年度客流 / 营收** | 2,850,364,173 人次 / ¥723,633,492,168.56 |
+| **OceanBase 年度车次** | 5,469,688 列,365 天累计不封顶 |
+| **OceanBase 年度客流 / 营收** | 2,573,835,026 人次 / ¥915,093,470,567 |
 | **OceanBase 年度线路-日期事实** | 438,000 行(365 天 × 1,200 条线路) |
 | **每列车座位定员** | 554 席(8 节编组:商务座 10 + 一等座 204 + 二等座 340) |
 | **滚动服务日明细座位日历** | 约 332 万个座位日历对象 |
-| **OSM 铁路特征数** | 简化后 8,000 条 LineString |
-| **铁路匹配率** | ≥ 52.7% 的生成区段成功贴合真实 OSM 走廊(其余降级为站点直线) |
+| **OSM 铁路渲染特征数** | 简化后 12,000 条 LineString |
+| **OSM 铁路图(用于路径追踪)** | 254,501 节点 / 275,919 边,基于 347,132 条原始铁路要素构建 |
+| **铁路图追踪区段(rail-traced)** | **70.4%** 通过 A\* 算法在铁路图上路径追踪生成 |
+| **铁路匹配总体** | **99.4%**(rail-traced + 走廊采样),仅 0.6% 退化为直线段 |
+| **几何连续性** | 218,127 个区段间转换中 0 处大坐标跳变,6,301 个段间边界全部连续 |
 | **快照推送频率** | 150 ms / 次,从 Worker → UI |
-| **测试通过率** | 10/10(座位库存、定价、引擎、失约、动态需求、换日滚动、OceanBase dry-run、数据多样性) |
+| **测试通过率** | 16/16(座位库存、定价、引擎、失约、动态需求、换日滚动、OceanBase dry-run、数据多样性、几何校验、OSM 补充、去重、订票流水、退票流水) |
 
 ---
 
@@ -341,36 +344,71 @@ weight(train) = max(0.1, frequencyRank + 0.2)
 
 正因如此,直播中的营收与客流计数**会随时间持续增长** —— 它不是预先注入的静态回放。
 
-### 5.4 OSM 铁路匹配的空间网格索引
+### 5.4 铁路网络图 + A\* 路径追踪
 
-HOTOSM 中国铁路数据集包含约 14.5 万条 LineString。如果朴素地把每条生成线路区段对所有 OSM 几何做投影,运算量约 **O(线路数 × OSM 特征数) ≈ 10⁹** 次 Haversine 计算 —— 显然不可接受。
+早期版本采用"按弦投影排序候选点"的朴素方案,在铁路弯曲处会产生**坐标顺序错乱**(整条数据库中累计 15,077 处大跳变 —— 表现为列车在地图上"瞬移"或"穿越湖海")。当前实现升级为**两阶段几何流水线**:
 
-`scripts/prepare-data.cjs` 构建了一个 **0.35° 网格哈希索引**(约合 30°N 纬度上 38 km),把每个 OSM 顶点按 `(⌊lng/0.35⌋, ⌊lat/0.35⌋)` 桶号入索引:
+**阶段 1 —— 从 OSM 构建铁路图。** 解析 347,132 条 `railway=rail` LineString,把所有顶点对齐到 0.0055°(约 600 m)的网格上。同一条 LineString 中相邻顶点形成边;不同 LineString 中落在同一网格单元的顶点合并为同一节点 —— **在道岔处自动连成一张完整的铁路图**:
 
 ```js
-function createRailIndex(railGeojson) {
-  const cellSize = 0.35;
-  const cells = new Map();
-  for (const feature of railGeojson.features) {
-    feature.geometry.coordinates.forEach((coord, index) => {
-      const key = `${Math.floor(coord[0]/cellSize)}:${Math.floor(coord[1]/cellSize)}`;
-      cells.set(key, [...(cells.get(key) ?? []), { lng: coord[0], lat: coord[1], index }]);
-    });
+function buildRailNetwork(osmFeatures) {
+  const cellSize = 0.0055;          // 约 600 m
+  const cellMap = new Map();
+  const nodes  = [];                 // { lng, lat, neighborList, refCount }
+  for (const feature of osmFeatures) {
+    let prevId = null;
+    for (const [lng, lat] of feature.coordinates) {
+      const id = findOrCreateNode(lng, lat);   // 同网格顶点合并为同节点
+      if (prevId !== null && prevId !== id) {
+        nodes[prevId].neighbors.add(id);
+        nodes[id].neighbors.add(prevId);
+      }
+      prevId = id;
+    }
   }
-  return { cells, cellSize };
+  // …额外构建 0.04° 空间桶索引,实现 O(1) 最近节点查找
 }
 ```
 
-对每对 `(from, to)` 区段(直线距离 `directKm`):
+最终:**254,501 节点 / 275,919 边** —— 一张媲美欧洲铁路全网规模的铁路图,但仍小到能在毫秒级内完成 A\* 搜索。
 
-1. 扩展边界框 `(from, to) ± margin`,其中 `margin = clamp(directKm/210, 0.55, 3.8)°`。
-2. 查询边界框相交的网格(典型 4–80 个,**O(bbox 面积 / cellSize²)**)。
-3. 按弦上**带符号投影** `t ∈ (-0.12, 1.12)` 过滤候选。
-4. 丢弃**垂直距离**超出 `clamp(directKm × 0.55, 45, 220) km` 的点。
-5. 按投影排序,做*最小间距去重*(短途 ≥ 4 km、干线 ≥ 9 km),最后重采样至 ≤ 28–46 个锚点。
-6. 若锚点不足 3 个则降级为 `[from, to]` 直线。
+**阶段 2 —— 对每个区段在铁路图上跑 A\* 搜索。** 对每对相邻车站,先用空间桶索引把站点对齐到最近的铁路节点;然后以**起讫点直线距离**作为可采纳启发函数运行有界 A\*:
 
-最终效果:**52.7% 的生成区段贴合真实 OSM 铁路几何**,彻底消除朴素插值造成的**列车横渡海面、跨越湖泊**等可笑现象。剩余 47.3% 平稳降级为站点弦,并显式打上 `geometrySource: 'station-straight-fallback'` 标记。
+```js
+function dijkstraPath(network, startId, goalId, directKm) {
+  const heap = new BinaryHeap();
+  heap.push({ id: startId, dist: 0, score: distance(startNode, goalNode) });
+  const maxKm = Math.max(180, directKm * 2.2);   // 限定搜索半径
+  while (heap.size()) {
+    const { id, dist } = heap.pop();
+    if (id === goalId) return reconstructPath(/* … */);
+    for (const neighborId of nodes[id].neighborList) {
+      const newDist = dist + distance(node, neighbor);
+      if (newDist > maxKm) continue;             // 剪枝:防止 A* 漫游
+      heap.push({ id: neighborId, dist: newDist,
+                  score: newDist + distance(neighbor, goalNode) });
+    }
+  }
+}
+```
+
+**绕行守卫**:若 A\* 给出的路径超过弦长 1.85 倍则丢弃,继续走下一种策略。
+
+**阶段 3 —— 简化与修复。** 成功的 A\* 路径再依次经过:
+
+1. **Douglas-Peucker 折线简化**,每段控制在 ≤ 70 个顶点,容差按距离自适应(0.0008°–0.0035°)—— 在保留可见曲率的前提下,把 `route-data.json` 体积从 78 MB 降到 13 MB。
+2. **坐标精度截断**至 5 位小数(约 1.1 m 精度)。
+3. **大跳变修复**:任何残余的相邻坐标跳变 > 0.45° 都做线性插值补点。1,280 个区段触发了轻微修复。
+
+**阶段 4 —— 兜底策略。** 当 A\* 失败时(例如 OSM 数据局部缺失,车站不在图上):算法依次回退至**走廊采样**(老的边界框-投影方案)与**直线弦**。当前分布:
+
+| 几何来源 | 占比 |
+|---|---:|
+| `rail-traced`(铁路图 A\* 追踪) | **70.4%** |
+| `hotosm-rail-corridor`(走廊采样) | 29.0% |
+| `station-straight-fallback`(直线弦) | 0.6% |
+
+最终效果:跨越 218,127 个区段间转换、6,301 个段间边界,**0 处大坐标跳变、0 处段间不连续**。
 
 #### 折线弧长插值
 
@@ -561,16 +599,17 @@ new SimulationWorkerClient({ onSnapshot })
 
 ### 双模式架构
 
-本项目在两种互补模式下运行:
+本项目在三种互补模式下运行:
 
 | 模式 | 精度 | 规模 | 运行时 |
 |---|---|---|---|
 | **浏览器明细模式** | 座位级区间日历 | 1 个滚动服务日(~6 K 列车、~3.3 M 座位) | Web Worker @ 20 Hz |
-| **OceanBase 年度模式** | 线路-日期聚合事实 | 365 天(~606 万列车、43.8 万条线路-日期行) | Python 多进程 + 批量 INSERT |
+| **OceanBase 年度模式** | 线路-日期聚合事实 | 365 天(~547 万列车、43.8 万条线路-日期行) | Python 多进程 + 批量 INSERT |
+| **OceanBase 流水模式** | 单张车票级订票流水 | 浏览器中产生的所有订票 / 退票 / 失约 | Web Worker → HTTP NDJSON → PyMySQL |
 
 ###  Schema 设计
 
-种子脚本创建一个精简的**星型 Schema**,包含 4 张维度表和 2 张事实表:
+种子脚本创建一个**星型 Schema**,包含 5 张维度/查找表和 3 张事实表:
 
 ```sql
 -- 维度表
@@ -578,6 +617,7 @@ stations          (station_id PK, name, province, city, bureau, kind, tier, lng,
 routes            (route_id PK, code, train_no, route_type, origin, destination, ...)
 route_stops       (route_id, stop_index PK, station_id, name, province, ...)
 route_segments    (route_id, segment_index PK, from_station, to_station, distance_km, ...)
+route_geometry    (route_id, segment_index PK, geometry_source, coordinate_count, coordinates_json)
 
 -- 事实表
 simulation_runs   (run_id PK, start_date, end_date, days, route_count, station_count,
@@ -588,9 +628,35 @@ daily_route_services
    service_count, demand_multiplier, capacity_multiplier, price_surge_multiplier,
    estimated_passengers, estimated_revenue,
    is_weekend, is_holiday, calendar_label)
+calendar_summary
+  (run_id, service_date, day_index, day_of_week, is_weekend, is_holiday, calendar_label,
+   demand_multiplier, capacity_multiplier, price_surge_multiplier,
+   total_train_services, total_passengers, total_revenue)
 ```
 
-所有维度表使用 `ON DUPLICATE KEY UPDATE`,重复运行幂等。事实表按 `run_id` 先清空再插入,避免脏数据。
+`route_geometry` 表把铁路图追踪生成的折线以 JSON 数组形式持久化,使分析型 SQL 可直接读取线路几何而无需访问浏览器侧。`calendar_summary` 表提供按日的预聚合,支持类似 *"春运 vs 暑运的日均客流差异"* 之类的分析查询而无需扫描线路-日期事实表。所有维度表使用 `ON DUPLICATE KEY UPDATE`,重复运行幂等;事实表按 `run_id` 先清空再插入,避免脏数据。
+
+此外还有第 4 张事实表 `bookings` —— **实时订票流水**:每张确认/退票的车票从浏览器 Worker 经 `/ingest-bookings` HTTP 端点串流至 `scripts/oceanbase_booking_ingest.py`,后者批量 upsert 进 OceanBase。这弥补了过去"订票仅存在于浏览器内存"的可恢复性缺口。
+
+```
+SimulationEngine.bookTrip()           ─►  ledger.push(entry)
+                                          │
+                  worker.flushLedger()  ◄─┘  (每 4 秒)
+                          │
+                          ▼  POST /ingest-bookings (NDJSON)
+                  serve-static.cjs
+                          │
+                          ▼  spawn python3 oceanbase_booking_ingest.py --input ...
+                  scripts/oceanbase_booking_ingest.py
+                          │
+                          ▼  PyMySQL executemany INSERT ... ON DUPLICATE KEY UPDATE
+                  OceanBase `bookings` 表
+```
+
+- **幂等**:`ON DUPLICATE KEY UPDATE` 使退票/状态翻转直接覆盖原确认记录,不会产生重复。
+- **背压容忍**:OceanBase 不可达时,Worker 把失败批次重新塞回内存队列(上限 4,000 条),下个周期再试。浏览器照常运行,只是持久化轨迹暂停。
+- **可关闭**:未设置 `OB_PASSWORD` 或 `CHINAHSR_DISABLE_INGEST=1` 时,静态服务器仍把 NDJSON 缓存到 `/tmp/chinahsr-ledger/`,可后续回放。
+- **可观测**:`GET /healthz` 返回 `{ ledgerIngest: true|false, ledgerDir: "..." }`。
 
 ### Python 多进程 ETL
 
@@ -602,11 +668,17 @@ daily_route_services
 4. **生成** 每线路每日的服务次数、预估客流与预估营收——算法与浏览器引擎的日历逻辑(节假日、旺季、周末)**完全一致**,保证 live 日与年度计划不 diverge。
 5. **批量插入** 维度表一次,然后以 `batch_size`(默认 4,000)流式写入事实表。
 
-在 16 核 MacBook Pro 上,全年数据生成+入库仅需 **~10 秒**:
+在 16 核 MacBook Pro 上,全年数据生成 + 入库仅需 **~2 秒**(每完成 10% 打印一次进度):
 
 ```
+[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1200 workers=12 chunk_days=8
+[oceanbase:seed] connecting to OceanBase at 127.0.0.1:2881
+[oceanbase:seed] loading dimension tables: 3,147 stations, 1,200 routes
+[oceanbase:seed]   progress: 5/46 chunks (11%)
+...
+[oceanbase:seed]   progress: 46/46 chunks (100%)
 [oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1200 route_day_rows=438000
-                 trains=6056439 passengers=2850364173 revenue=723633492168.56
+                 trains=5469688 passengers=2573835026 revenue=915093470567.65
                  workers=12 db=loaded
 ```
 

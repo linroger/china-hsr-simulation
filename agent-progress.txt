@@ -50,3 +50,13 @@ Next steps:
 1. Add an authoritative stop-by-stop timetable source if available to replace simulation-derived intermediate stops.
 2. Add a scenario/replay export so calendar, demand, and seed choices can be reproduced from the UI.
 3. Add a dedicated algorithm comparison view for exact small-instance optimization versus the production heuristic.
+
+2026-05-03T16:55:00Z | branch: main
+Feature/bug worked on: Reliability/robustness/performance overhaul + booking ledger persistence.
+Files touched: scripts/prepare-data.cjs (full rewrite of geometry pipeline), scripts/oceanbase_seed.py (added route_geometry/calendar_summary/bookings tables, progress logging), scripts/oceanbase_booking_ingest.py (new), scripts/serve-static.cjs (added /ingest-bookings endpoint), src/simulation_core/SimulationEngine.js (skipped-station processing, ledger, deterministic IDs, dead-code removal, year-end fix), src/simulation_core/simulationWorker.js (ledger flusher), src/App.jsx (ledger endpoint config), tests/dataDiversity.test.mjs (raised thresholds + Xi'an regression), tests/geometryValidation.test.mjs (new), tests/bookingLedger.test.mjs (new), README.md, README.zh-CN.md, NEXTSTEPS.md, handoff.md, public generated data artifacts.
+Tests run: `npm run prepare:data` (96.3% known endpoints, 224 origins, 28 corridors, 70.4% rail-traced, 99.4% rail-matched, 0 big jumps); `npm test` (16/16 passing including 4 new geometry/coverage tests + 2 new ledger tests); `npm run build` (passing); `python3 scripts/oceanbase_seed.py --skip-db --days 365` (5,469,688 trains, 2,573,835,026 passengers, ¥915,093,470,567 in 1.87s); curl /ingest-bookings POST verified (NDJSON file written, dispatch flagged when OB_PASSWORD set); full-engine probe (6000 trains, 774 active, 2,741,460 passengers, p95 quote 0.1 ms, 339 Xi'an services bookable).
+Result: Passing. Geometry quality jumped from 52.7% rail-matched to 99.4% (70.4% via A* graph traversal); 0 trains-over-water defects; 67 Xi'an routes (was 0); booking ledger persisted to OceanBase via NDJSON HTTP ingest with idempotent upsert and backpressure-tolerant retry. Simulation engine handles fast ticks correctly (no skipped boarding events). All 16 tests deterministic and < 2s. README/handoff/NEXTSTEPS updated.
+Next steps:
+1. Wire dashboard panel for booking ledger row counts from `/healthz` or a `/ledger-stats` endpoint.
+2. Add scenario replay using the persisted booking ledger.
+3. Consider per-segment hourly demand fact table for "what's the busiest hour on Beijing→Shanghai during Spring Festival" queries.

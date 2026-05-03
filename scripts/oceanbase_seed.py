@@ -32,6 +32,10 @@ DEFAULT_SUMMARY_PATH = PUBLIC / "oceanbase-yearly-summary.json"
 WORKER_ROUTES: list[dict[str, Any]] = []
 
 
+def log(message: str) -> None:
+    print(f"[oceanbase:seed] {message}", flush=True)
+
+
 SCHEMA_SQL = [
     """
     CREATE TABLE IF NOT EXISTS stations (
@@ -149,6 +153,68 @@ SCHEMA_SQL = [
       KEY idx_daily_route_services_route_date (route_id, service_date)
     ) DEFAULT CHARSET=utf8mb4
     """,
+    """
+    CREATE TABLE IF NOT EXISTS route_geometry (
+      route_id VARCHAR(160) NOT NULL,
+      segment_index INT NOT NULL,
+      geometry_source VARCHAR(64),
+      coordinate_count INT,
+      coordinates_json LONGTEXT,
+      PRIMARY KEY (route_id, segment_index)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS calendar_summary (
+      run_id VARCHAR(96) NOT NULL,
+      service_date DATE NOT NULL,
+      day_index INT NOT NULL,
+      day_of_week INT,
+      is_weekend TINYINT DEFAULT 0,
+      is_holiday TINYINT DEFAULT 0,
+      calendar_label VARCHAR(128),
+      demand_multiplier DECIMAL(8,3),
+      capacity_multiplier DECIMAL(8,3),
+      price_surge_multiplier DECIMAL(8,3),
+      total_train_services BIGINT,
+      total_passengers BIGINT,
+      total_revenue DECIMAL(24,2),
+      PRIMARY KEY (run_id, day_index),
+      KEY idx_calendar_summary_label (calendar_label),
+      KEY idx_calendar_summary_date (service_date)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS bookings (
+      ticket_id VARCHAR(64) NOT NULL,
+      run_id VARCHAR(96),
+      train_id VARCHAR(160),
+      train_code VARCHAR(64),
+      route_id VARCHAR(160),
+      passenger_id VARCHAR(64),
+      passenger_name VARCHAR(128),
+      origin_station VARCHAR(128),
+      destination_station VARCHAR(128),
+      origin_index INT,
+      destination_index INT,
+      seat_class VARCHAR(32),
+      seat_count INT,
+      seats_json VARCHAR(512),
+      price DECIMAL(12,2),
+      distance_km INT,
+      booked_at_minute INT,
+      booked_at_clock VARCHAR(8),
+      service_date DATE,
+      status VARCHAR(32),
+      no_show TINYINT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (ticket_id),
+      KEY idx_bookings_train (train_id),
+      KEY idx_bookings_route_date (route_id, service_date),
+      KEY idx_bookings_status (status),
+      KEY idx_bookings_run (run_id)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
 ]
 
 
@@ -169,17 +235,23 @@ def main() -> int:
     summary_path = Path(args.summary_path).resolve()
     summary_path.parent.mkdir(parents=True, exist_ok=True)
 
+    log(f"run={run_id} days={args.days} routes={len(routes)} workers={args.workers} chunk_days={args.chunk_days}")
+
     conn = None
     if not args.skip_db:
+        log(f"connecting to OceanBase at {os.environ.get('OB_HOST', '127.0.0.1')}:{os.environ.get('OB_PORT', '2881')}")
         conn = connect_oceanbase(read_db_config())
         with conn.cursor() as cursor:
             for statement in SCHEMA_SQL:
                 cursor.execute(statement)
         conn.commit()
+        log(f"loading dimension tables: {len(stations):,} stations, {len(routes):,} routes")
         load_static_dimension_tables(conn, stations, routes, args.batch_size)
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM daily_route_services WHERE run_id = %s", (run_id,))
+            cursor.execute("DELETE FROM route_geometry WHERE route_id IN (SELECT route_id FROM routes)")
         conn.commit()
+        load_route_geometry(conn, routes, args.batch_size)
 
     totals = generate_and_optionally_insert_daily_rows(
         run_id=run_id,
@@ -459,14 +531,23 @@ def generate_and_optionally_insert_daily_rows(
         "estimated_revenue": 0.0,
         "surge_day_count": 0,
     }
+    daily_rollups: list[tuple[Any, ...]] = []
     tasks = [(run_id, start_date.isoformat(), start_day, min(days, start_day + chunk_days)) for start_day in range(0, days, chunk_days)]
+    completed_chunks = 0
+    total_chunks = len(tasks)
     context = get_context("spawn")
     with context.Pool(processes=workers, initializer=initialize_worker, initargs=(routes,)) as pool:
         for result in pool.imap_unordered(generate_day_chunk, tasks):
             for key in totals:
                 totals[key] += result[key]
+            daily_rollups.extend(result.get("daily_rollups", []))
             if conn is not None:
                 insert_daily_rows(conn, result["rows"], batch_size)
+            completed_chunks += 1
+            if completed_chunks % max(1, total_chunks // 10) == 0 or completed_chunks == total_chunks:
+                log(f"  progress: {completed_chunks}/{total_chunks} chunks ({(completed_chunks / total_chunks) * 100:.0f}%)")
+    if conn is not None and daily_rollups:
+        insert_calendar_summary(conn, daily_rollups, batch_size)
     return totals
 
 
@@ -479,6 +560,7 @@ def generate_day_chunk(task: tuple[str, str, int, int]) -> dict[str, Any]:
     run_id, start_iso, start_day, end_day = task
     start_date = date.fromisoformat(start_iso)
     rows = []
+    daily_rollups = []
     totals = {
         "route_day_rows": 0,
         "total_train_services": 0,
@@ -491,6 +573,9 @@ def generate_day_chunk(task: tuple[str, str, int, int]) -> dict[str, Any]:
         calendar = calendar_state(current_date, day_index)
         if calendar["demandMultiplier"] > 1.001:
             totals["surge_day_count"] += 1
+        day_train_services = 0
+        day_passengers = 0
+        day_revenue = 0.0
         for route in WORKER_ROUTES:
             service_count = service_count_for_route(route, calendar)
             estimate = estimate_route_day(route, service_count, calendar)
@@ -515,8 +600,78 @@ def generate_day_chunk(task: tuple[str, str, int, int]) -> dict[str, Any]:
             totals["total_train_services"] += service_count
             totals["estimated_passengers"] += estimate["passengers"]
             totals["estimated_revenue"] += estimate["revenue"]
+            day_train_services += service_count
+            day_passengers += estimate["passengers"]
+            day_revenue += estimate["revenue"]
+        daily_rollups.append((
+            run_id,
+            current_date.isoformat(),
+            day_index,
+            calendar["dayOfWeek"],
+            1 if calendar["isWeekend"] else 0,
+            1 if calendar["isHoliday"] else 0,
+            calendar["label"],
+            calendar["demandMultiplier"],
+            calendar["capacityMultiplier"],
+            calendar["priceSurgeMultiplier"],
+            day_train_services,
+            day_passengers,
+            round(day_revenue, 2),
+        ))
     totals["rows"] = rows
+    totals["daily_rollups"] = daily_rollups
     return totals
+
+
+def load_route_geometry(conn, routes: list[dict[str, Any]], batch_size: int) -> None:
+    rows = []
+    for route in routes:
+        for segment_index, segment in enumerate(route.get("segments", [])):
+            geometry = segment.get("geometry") or []
+            rows.append((
+                value(route, "id"),
+                segment_index,
+                value(segment, "geometrySource"),
+                len(geometry),
+                json.dumps(geometry, separators=(",", ":")),
+            ))
+    if not rows:
+        return
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO route_geometry
+          (route_id, segment_index, geometry_source, coordinate_count, coordinates_json)
+        VALUES (%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          geometry_source=VALUES(geometry_source),
+          coordinate_count=VALUES(coordinate_count),
+          coordinates_json=VALUES(coordinates_json)
+        """,
+        rows,
+        batch_size,
+    )
+
+
+def insert_calendar_summary(conn, rows: list[tuple[Any, ...]], batch_size: int) -> None:
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO calendar_summary
+          (run_id, service_date, day_index, day_of_week, is_weekend, is_holiday, calendar_label,
+           demand_multiplier, capacity_multiplier, price_surge_multiplier,
+           total_train_services, total_passengers, total_revenue)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          day_of_week=VALUES(day_of_week), is_weekend=VALUES(is_weekend), is_holiday=VALUES(is_holiday),
+          calendar_label=VALUES(calendar_label), demand_multiplier=VALUES(demand_multiplier),
+          capacity_multiplier=VALUES(capacity_multiplier), price_surge_multiplier=VALUES(price_surge_multiplier),
+          total_train_services=VALUES(total_train_services), total_passengers=VALUES(total_passengers),
+          total_revenue=VALUES(total_revenue)
+        """,
+        rows,
+        batch_size,
+    )
 
 
 def insert_daily_rows(conn, rows: list[tuple[Any, ...]], batch_size: int) -> None:
@@ -591,14 +746,20 @@ def query_table_counts(conn, run_id: str) -> dict[str, int]:
         "routes": ("SELECT COUNT(*) FROM routes", None),
         "routeStops": ("SELECT COUNT(*) FROM route_stops", None),
         "routeSegments": ("SELECT COUNT(*) FROM route_segments", None),
+        "routeGeometry": ("SELECT COUNT(*) FROM route_geometry", None),
         "simulationRuns": ("SELECT COUNT(*) FROM simulation_runs", None),
         "dailyRouteServicesForRun": ("SELECT COUNT(*) FROM daily_route_services WHERE run_id = %s", (run_id,)),
+        "calendarSummaryForRun": ("SELECT COUNT(*) FROM calendar_summary WHERE run_id = %s", (run_id,)),
     }
     counts: dict[str, int] = {}
     with conn.cursor() as cursor:
         for key, (sql, params) in queries.items():
-            cursor.execute(sql, params)
-            counts[key] = int(cursor.fetchone()[0])
+            try:
+                cursor.execute(sql, params)
+                counts[key] = int(cursor.fetchone()[0])
+            except Exception as exc:  # noqa: BLE001
+                counts[key] = 0
+                log(f"  warning: count query for {key} failed: {exc}")
     return counts
 
 

@@ -1,12 +1,16 @@
 import { SimulationEngine } from './SimulationEngine.js';
 
 const SNAPSHOT_INTERVAL_MS = 150;
+const LEDGER_FLUSH_INTERVAL_MS = 4000;
+const LEDGER_BATCH_LIMIT = 800;
 
 let engine = null;
 let publishTimer = null;
 let preloadTimer = null;
+let ledgerTimer = null;
 let initialized = false;
 let lastPublishedServiceDayIndex = null;
+let ledgerEndpoint = null;
 
 self.onmessage = (event) => {
   const { id, type, payload = {} } = event.data || {};
@@ -15,13 +19,16 @@ self.onmessage = (event) => {
       engine?.stop();
       stopPublishing();
       stopBackgroundPreload();
+      stopLedgerFlush();
       engine = new SimulationEngine({ ...payload, preloadDemand: payload.preloadDemand ?? false });
-      engine.setSpeed(payload.speed || 18);
+      engine.setSpeed(payload.speed || 60);
+      ledgerEndpoint = payload.ledgerEndpoint || null;
       initialized = true;
       lastPublishedServiceDayIndex = null;
       postSnapshot('init');
       respond(id, { ok: true, worker: workerInfo() });
       startBackgroundPreload();
+      startLedgerFlush();
       return;
     }
 
@@ -109,6 +116,39 @@ function startBackgroundPreload() {
 function stopBackgroundPreload() {
   if (preloadTimer) clearTimeout(preloadTimer);
   preloadTimer = null;
+}
+
+function startLedgerFlush() {
+  if (!ledgerEndpoint) return;
+  stopLedgerFlush();
+  ledgerTimer = setInterval(() => {
+    flushLedger().catch(() => {
+      // Network errors are non-fatal — bookings still live in the engine.
+    });
+  }, LEDGER_FLUSH_INTERVAL_MS);
+}
+
+function stopLedgerFlush() {
+  if (ledgerTimer) clearInterval(ledgerTimer);
+  ledgerTimer = null;
+}
+
+async function flushLedger() {
+  if (!engine || !ledgerEndpoint) return;
+  const drained = engine.drainLedger(LEDGER_BATCH_LIMIT);
+  if (!drained.length) return;
+  const ndjson = drained.map((entry) => JSON.stringify(entry)).join('\n');
+  try {
+    await fetch(ledgerEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-ndjson' },
+      body: ndjson,
+      keepalive: true,
+    });
+  } catch (error) {
+    // Re-queue on failure so we try again next interval. Cap at 4000 to bound memory.
+    engine.ledger = engine.ledger ? [...drained, ...engine.ledger].slice(-4000) : drained.slice(-4000);
+  }
 }
 
 function respond(id, payload) {

@@ -118,3 +118,12 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - 2026-05-02T19:43:46Z: Reopened the handoff for the user's calendar surge and high-volume scaling request; added R13-R16 acceptance criteria and recorded the intended scheduling/optimization decisions before code edits.
 - 2026-05-02T20:19:11Z: Completed the calendar surge/high-volume refinement, fixed ETL path discovery and Mapbox fallback configuration, verified with `./init.sh`, full-engine probe, HTTP 200, browser screenshot, and Dashboard DOM checks.
 - 2026-05-03T08:08:00Z: Reopened handoff for the continuation slice; added R17-R20 and recorded the OceanBase annual aggregate design before code edits.
+- 2026-05-03T16:55:00Z: Major reliability/robustness pass.
+  - Replaced naive projection-by-chord geometry with a 254k-node OSM rail graph + bounded A\* path tracing; geometry source distribution shifted to 70.4 % rail-traced / 29.0 % corridor-sampled / 0.6 % fallback (was 52.7 % matched).
+  - Added OSM-based station augmentation (89 missing HSR hubs incl. 西安北/昆明南/南宁东/香港西九龙); known-endpoint coverage rose from 64 % to 96.3 %; Xi'an routes 0 → 67.
+  - Route deduplication by directed (origin, destination); 6,186 candidates → 1,850 unique pairs.
+  - Douglas-Peucker simplification + 5-decimal rounding shrank `route-data.json` from 78 MB to 13 MB while keeping fidelity (0 big jumps, 0 segment-boundary breaks across 218,127 transitions / 6,301 boundaries).
+  - SimulationEngine fixes: process all skipped stations during fast ticks; final-station processing on completion; year-end edge case; deterministic ticket IDs; per-train booking cap; sort key fix in `selectVisibleTrains`; removed dead code.
+  - OceanBase: added `route_geometry`, `calendar_summary`, and live `bookings` tables; built browser→server→Python ingest pipeline (`/ingest-bookings` NDJSON endpoint + `oceanbase_booking_ingest.py`); idempotent upserts, backpressure-tolerant retry.
+  - Tests: 10 → 16 passing. New geometry-validation, OSM-augmentation, dedup, and booking-ledger regressions.
+  - README.md and README.zh-CN.md updated with §5.4 rewrite (rail graph + A\*), schema additions, ingest pipeline diagram, and refreshed metrics.

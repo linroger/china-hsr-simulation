@@ -44,6 +44,7 @@ export default function App() {
           stations: stationData.stations,
           routes: routeData.routes,
           speed,
+          ledgerEndpoint: '/ingest-bookings',
         });
         await worker.start();
         setLoading('');

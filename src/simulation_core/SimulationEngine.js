@@ -52,6 +52,7 @@ export class SimulationEngine {
     };
     this.tickCounter = 0;
     this.lastTickMs = null;
+    this.bookingCounter = 0;
     if (preloadDemand) this.preloadDemand();
     this.tick(0);
   }
@@ -188,12 +189,22 @@ export class SimulationEngine {
   }
 
   tick(realSeconds = 1) {
+    if (this.stats.fullYearCompleted) return;
     this.nowMinutes += realSeconds * this.speed / 60;
     this.calendar = calendarState(this.nowMinutes);
     if (this.calendar.dayIndex >= this.yearDays) {
       this.stats.fullYearCompleted = true;
       this.nowMinutes = this.yearDays * 1440 - 1;
       this.calendar = calendarState(this.nowMinutes);
+      // Run final-day processing: complete all running trains.
+      for (const train of this.trains) {
+        if (!train.completed) {
+          train.completed = true;
+          train.status = 'completed';
+          train.currentSegmentIndex = Math.max(0, (train.segmentMinutes?.length || 1) - 1);
+          train.segmentProgress = 1;
+        }
+      }
       this.stop();
       return;
     }
@@ -263,17 +274,26 @@ export class SimulationEngine {
     while (segmentIndex < train.segmentMinutes.length && elapsed > train.segmentMinutes[segmentIndex]) {
       elapsed -= train.segmentMinutes[segmentIndex];
       segmentIndex += 1;
+      // Process stations crossed during this tick. Without this, fast simulation
+      // (or large speed multipliers) can skip boarding/alighting events when a
+      // single tick straddles multiple segments.
+      const stationIndex = segmentIndex;
+      if (stationIndex < train.stops.length && stationIndex > train.currentSegmentIndex) {
+        this.processStation(train, stationIndex);
+      }
     }
     if (segmentIndex >= train.segmentMinutes.length) {
+      // Final station processing in case the destination wasn't covered above.
+      const finalStop = train.stops.length - 1;
+      if (finalStop > 0 && !train.processedStationIndexes.has(finalStop)) {
+        this.processStation(train, finalStop);
+      }
       train.completed = true;
       train.status = 'completed';
       train.currentSegmentIndex = train.segmentMinutes.length - 1;
       train.segmentProgress = 1;
       this.logEvent('arrival', `${train.code} completed ${train.origin} to ${train.destination}.`);
       return;
-    }
-    if (segmentIndex !== train.currentSegmentIndex) {
-      this.processStation(train, segmentIndex);
     }
     train.currentSegmentIndex = segmentIndex;
     train.segmentProgress = elapsed / train.segmentMinutes[segmentIndex];
@@ -369,7 +389,8 @@ export class SimulationEngine {
       this.stats.rejectedBookings += 1;
       return { ok: false, reason: 'No seats available for the requested interval.', quote };
     }
-    const ticketId = `T${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 9999).toString().padStart(4, '0')}`;
+    this.bookingCounter = (this.bookingCounter || 0) + 1;
+    const ticketId = generateTicketId(this.seed, this.bookingCounter);
     const passengerId = `P${ticketId.slice(1)}`;
     const assignedSeats = train.inventory.allocate({
       originIndex,
@@ -404,13 +425,54 @@ export class SimulationEngine {
       noShow: this.random(trainId, originIndex, destinationIndex, this.stats.totalBookings, 'noShow') < noShowProbability(train, originIndex, seatClass),
     };
     train.bookings.push(booking);
+    if (train.bookings.length > 1500) train.bookings = train.bookings.slice(-1500);
     this.bookings.push(booking);
     if (this.bookings.length > 400) this.bookings = this.bookings.slice(-400);
     this.stats.totalRevenue += booking.price;
     this.stats.totalBookings += 1;
     this.stats.totalPassengers += groupSize;
+    this.recordLedgerEntry(booking, train);
     if (!silent) this.logEvent('booking', `${booking.trainCode} ${booking.origin} to ${booking.destination}: ${assignedSeats.map((s) => `${s.car}-${s.row}${s.letter}`).join(', ')} for ¥${booking.price}.`);
     return { ok: true, booking, quote };
+  }
+
+  recordLedgerEntry(booking, train) {
+    if (!this.ledger) this.ledger = [];
+    this.ledger.push({
+      ticketId: booking.ticketId,
+      passengerId: booking.passengerId,
+      passengerName: booking.passengerName,
+      trainId: booking.trainId,
+      trainCode: booking.trainCode,
+      routeId: train.routeId,
+      origin: booking.origin,
+      destination: booking.destination,
+      originIndex: booking.originIndex,
+      destinationIndex: booking.destinationIndex,
+      seatClass: booking.seatClass,
+      seats: booking.seats.map((seat) => `${seat.car}-${seat.row}${seat.letter}`),
+      price: booking.price,
+      distanceKm: booking.distanceKm,
+      bookedAtMinute: booking.bookedAtMinute,
+      bookedAtClock: formatClock(booking.bookedAtMinute),
+      serviceDate: train.calendar?.dateIso,
+      status: booking.status,
+      noShow: Boolean(booking.noShow),
+    });
+    // Bound retained ledger size; consumers (worker → server) flush periodically.
+    if (this.ledger.length > 4000) this.ledger = this.ledger.slice(-4000);
+  }
+
+  /**
+   * Drain pending ledger entries for persistence. The browser worker calls this
+   * to ship a batch to the static server's `/ingest-bookings` endpoint, which
+   * forwards them to OceanBase via `scripts/oceanbase_booking_ingest.py`.
+   */
+  drainLedger(limit = 1000) {
+    if (!this.ledger || !this.ledger.length) return [];
+    const drained = this.ledger.slice(0, limit);
+    this.ledger = this.ledger.slice(limit);
+    return drained;
   }
 
   cancelBooking(ticketId) {
@@ -420,6 +482,8 @@ export class SimulationEngine {
     train.inventory.releaseTicket(ticketId);
     train.bookings = train.bookings.filter((item) => item.ticketId !== ticketId);
     this.bookings = this.bookings.filter((item) => item.ticketId !== ticketId);
+    booking.status = 'cancelled';
+    this.recordLedgerEntry(booking, train);
     this.logEvent('release', `${booking.trainCode} released ${booking.seats.length} seat(s) after cancellation or alighting logic.`);
     return true;
   }
@@ -723,24 +787,23 @@ function selectVisibleTrains(trains, limit) {
   const active = trains.filter((train) => train.status === 'running');
   const scheduled = trains.filter((train) => train.status === 'scheduled' && train.minutesToDeparture <= 120);
   const completed = trains.filter((train) => train.status === 'completed').slice(-60);
-  // Always include all active (running) trains; they must never be excluded
   if (active.length >= limit) {
     return active
-      .sort((a, b) => (b.currentSegmentIndex / Math.max(1, b.segments?.length || 1)) - (a.currentSegmentIndex / Math.max(1, a.segments?.length || 1)))
+      .sort((a, b) => {
+        const totalA = (a.stops?.length || 1) - 1;
+        const totalB = (b.stops?.length || 1) - 1;
+        const progressA = (a.currentSegmentIndex || 0) / Math.max(1, totalA);
+        const progressB = (b.currentSegmentIndex || 0) / Math.max(1, totalB);
+        return progressB - progressA;
+      })
       .slice(0, limit);
   }
   const remaining = limit - active.length;
   const scheduledSlice = scheduled
     .sort((a, b) => a.minutesToDeparture - b.minutesToDeparture)
     .slice(0, Math.min(remaining, scheduled.length));
-  const completedSlice = completed.slice(-Math.min(remaining - scheduledSlice.length, 60));
+  const completedSlice = completed.slice(-Math.min(Math.max(0, remaining - scheduledSlice.length), 60));
   return [...active, ...scheduledSlice, ...completedSlice];
-}
-
-function statusRank(status) {
-  if (status === 'running') return 0;
-  if (status === 'scheduled') return 1;
-  return 2;
 }
 
 function networkSummary(trains) {
@@ -861,8 +924,13 @@ function weightedTrainChoice(trains, value) {
   return trains[trains.length - 1];
 }
 
-function hashCode(value) {
-  return [...String(value)].reduce((hash, char) => ((hash << 5) - hash + char.charCodeAt(0)) | 0, 0);
+function generateTicketId(seed, counter) {
+  // Deterministic-but-unique ticket IDs: combine seed + monotonic counter +
+  // a small shuffle so consecutive IDs don't look sequential to readers.
+  const base = (counter * 2654435761) ^ (seed >>> 0);
+  const hex = (base >>> 0).toString(36).toUpperCase().padStart(7, '0');
+  const tail = (counter % 9999).toString().padStart(4, '0');
+  return `T${hex}${tail}`;
 }
 
 function seeded(key) {
