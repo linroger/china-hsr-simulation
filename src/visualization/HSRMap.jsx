@@ -136,7 +136,7 @@ export default function HSRMap({ trains, events }) {
         const p = feature.properties;
         new mapboxgl.Popup({ offset: 18 })
           .setLngLat(feature.geometry.coordinates)
-          .setHTML(`<div class="popup"><b>${p.code}</b><span>${p.current} to ${p.next}</span><span>Load ${(Number(p.load) * 100).toFixed(1)}% · ${p.pax}/${p.capacity}</span></div>`)
+          .setHTML(`<div class="popup"><b>${p.code}</b><span>${p.direction}: ${p.current} to ${p.next}</span><span>Load ${(Number(p.load) * 100).toFixed(1)}% · ${p.pax}/${p.capacity}</span></div>`)
           .addTo(map);
       });
       mapRef.current = map;
@@ -234,6 +234,8 @@ function trainGeojson(trains = []) {
         properties: {
           id: train.id,
           code: train.code,
+          direction: train.direction || 'outbound',
+          routeVariantId: train.routeVariantId || '',
           load: train.loadFactor,
           pax: train.passengerCount,
           capacity: train.capacity,
@@ -249,6 +251,7 @@ function interpolateTrainSet(previousTrains = [], targetTrains = [], progress = 
   return targetTrains.map((train) => {
     const previous = previousById.get(train.id);
     if (!previous?.coords || !train.coords || previous.status !== train.status) return train;
+    if (previous.routeVariantId && train.routeVariantId && previous.routeVariantId !== train.routeVariantId) return train;
     if (isRouteRegression(previous, train) || isLargeRouteJump(previous, train)) return train;
     return {
       ...train,

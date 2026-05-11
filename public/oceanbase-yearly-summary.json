@@ -1,14 +1,21 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-03T17:48:32+00:00",
-  "runId": "yearly-20260503T174820Z",
+  "generatedAt": "2026-05-11T13:33:56+00:00",
+  "runId": "codex-route-contract-20260511T1320Z",
   "source": "OceanBase annual route-day aggregate simulation",
-  "database": "chinahsr",
+  "database": "skipped",
   "startDate": "2026-01-01",
   "endDate": "2026-12-31",
   "days": 365,
   "stationCount": 3147,
   "routeCount": 1200,
+  "routeContract": {
+    "routeVariants": 2400,
+    "routeVariantStops": 17076,
+    "routeVariantSegments": 14676,
+    "routeVariantGeometry": 14676,
+    "railTracks": 12000
+  },
   "routeDayRows": 438000,
   "totalTrainServices": 5538508,
   "estimatedPassengers": 2606735581,
@@ -17,7 +24,7 @@
   "workerCount": 4,
   "cpuCount": 16,
   "chunkDays": 8,
-  "generatedSeconds": 11.665,
+  "generatedSeconds": 1.984,
   "dailyAverages": {
     "trainServices": 15174.0,
     "passengers": 7141741.3,
@@ -134,21 +141,13 @@
     }
   ],
   "oceanbase": {
-    "enabled": true,
-    "tables": {
-      "stations": 3147,
-      "routes": 2394,
-      "routeStops": 15906,
-      "routeSegments": 13512,
-      "routeGeometry": 7338,
-      "simulationRuns": 3,
-      "dailyRouteServicesForRun": 438000,
-      "calendarSummaryForRun": 365
-    }
+    "enabled": false,
+    "tables": {}
   },
   "architecture": {
     "browserDetailedMode": "rolling-day seat-level Web Worker",
     "yearlyPersistenceMode": "OceanBase route-day aggregate facts",
+    "routeContractMode": "OceanBase route variants + ordered stops + per-segment geometry",
     "rendering": "Mapbox WebGL",
     "computeParallelism": "Python multiprocessing for annual generation; browser Web Worker for live day"
   }

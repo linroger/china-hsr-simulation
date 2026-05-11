@@ -9,6 +9,7 @@ and too durable to belong in the browser heap.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -164,6 +165,100 @@ SCHEMA_SQL = [
     ) DEFAULT CHARSET=utf8mb4
     """,
     """
+    CREATE TABLE IF NOT EXISTS route_variants (
+      route_variant_id VARCHAR(192) NOT NULL,
+      route_id VARCHAR(160) NOT NULL,
+      direction VARCHAR(16) NOT NULL,
+      origin VARCHAR(128),
+      destination VARCHAR(128),
+      origin_province VARCHAR(64),
+      destination_province VARCHAR(64),
+      stop_count INT,
+      segment_count INT,
+      total_distance_km DOUBLE,
+      stop_sequence_hash VARCHAR(64),
+      stop_sequence_json LONGTEXT,
+      provenance VARCHAR(255),
+      is_active TINYINT DEFAULT 1,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (route_variant_id),
+      KEY idx_route_variants_route (route_id),
+      KEY idx_route_variants_direction (direction),
+      KEY idx_route_variants_origin_dest (origin, destination)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS route_variant_stops (
+      route_variant_id VARCHAR(192) NOT NULL,
+      route_id VARCHAR(160) NOT NULL,
+      direction VARCHAR(16) NOT NULL,
+      stop_index INT NOT NULL,
+      station_id VARCHAR(64),
+      name VARCHAR(128),
+      province VARCHAR(64),
+      city VARCHAR(64),
+      tier VARCHAR(32),
+      lng DOUBLE,
+      lat DOUBLE,
+      dwell_minutes INT,
+      simulated_stop TINYINT DEFAULT 0,
+      PRIMARY KEY (route_variant_id, stop_index),
+      KEY idx_route_variant_stops_route (route_id),
+      KEY idx_route_variant_stops_station (station_id),
+      KEY idx_route_variant_stops_direction (direction)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS route_variant_segments (
+      route_variant_id VARCHAR(192) NOT NULL,
+      route_id VARCHAR(160) NOT NULL,
+      direction VARCHAR(16) NOT NULL,
+      segment_index INT NOT NULL,
+      from_station VARCHAR(128),
+      to_station VARCHAR(128),
+      distance_km DOUBLE,
+      speed_limit_kmh INT,
+      track_type VARCHAR(32),
+      signaling VARCHAR(64),
+      geometry_source VARCHAR(64),
+      geometry_point_count INT,
+      PRIMARY KEY (route_variant_id, segment_index),
+      KEY idx_route_variant_segments_route (route_id),
+      KEY idx_route_variant_segments_from_to (from_station, to_station)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS route_variant_geometry (
+      route_variant_id VARCHAR(192) NOT NULL,
+      route_id VARCHAR(160) NOT NULL,
+      direction VARCHAR(16) NOT NULL,
+      segment_index INT NOT NULL,
+      geometry_source VARCHAR(64),
+      coordinate_count INT,
+      coordinates_json LONGTEXT,
+      PRIMARY KEY (route_variant_id, segment_index),
+      KEY idx_route_variant_geometry_route (route_id)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS rail_tracks (
+      rail_track_id VARCHAR(192) NOT NULL,
+      osm_id VARCHAR(64),
+      name VARCHAR(255),
+      gauge VARCHAR(64),
+      electrified VARCHAR(64),
+      usage_type VARCHAR(64),
+      hsr TINYINT DEFAULT 0,
+      coordinate_count INT,
+      properties_json LONGTEXT,
+      geometry_json LONGTEXT,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (rail_track_id),
+      KEY idx_rail_tracks_osm (osm_id),
+      KEY idx_rail_tracks_name (name)
+    ) DEFAULT CHARSET=utf8mb4
+    """,
+    """
     CREATE TABLE IF NOT EXISTS calendar_summary (
       run_id VARCHAR(96) NOT NULL,
       service_date DATE NOT NULL,
@@ -224,8 +319,10 @@ def main() -> int:
     start_date = date.fromisoformat(args.start_date)
     route_data = read_json(PUBLIC / "route-data.json")
     station_data = read_json(PUBLIC / "station-data.json")
+    rail_data = read_json(PUBLIC / "hsr-rails.geojson") if (PUBLIC / "hsr-rails.geojson").exists() else {"features": []}
     routes = route_data.get("routes", [])
     stations = station_data.get("stations", [])
+    rail_features = rail_data.get("features", [])
     if not routes:
         raise SystemExit("No routes found in public/route-data.json. Run npm run prepare:data first.")
     if not stations:
@@ -250,8 +347,15 @@ def main() -> int:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM daily_route_services WHERE run_id = %s", (run_id,))
             cursor.execute("DELETE FROM route_geometry WHERE route_id IN (SELECT route_id FROM routes)")
+            cursor.execute("DELETE FROM route_variants WHERE route_id IN (SELECT route_id FROM routes)")
+            cursor.execute("DELETE FROM route_variant_stops WHERE route_id IN (SELECT route_id FROM routes)")
+            cursor.execute("DELETE FROM route_variant_segments WHERE route_id IN (SELECT route_id FROM routes)")
+            cursor.execute("DELETE FROM route_variant_geometry WHERE route_id IN (SELECT route_id FROM routes)")
         conn.commit()
         load_route_geometry(conn, routes, args.batch_size)
+        load_route_variants(conn, routes, args.batch_size)
+        if rail_features:
+            load_rail_tracks(conn, rail_features, args.batch_size)
 
     totals = generate_and_optionally_insert_daily_rows(
         run_id=run_id,
@@ -277,6 +381,7 @@ def main() -> int:
         "days": args.days,
         "stationCount": len(stations),
         "routeCount": len(routes),
+        "routeContract": build_route_contract_summary(routes, rail_features),
         "routeDayRows": totals["route_day_rows"],
         "totalTrainServices": totals["total_train_services"],
         "estimatedPassengers": totals["estimated_passengers"],
@@ -299,6 +404,7 @@ def main() -> int:
         "architecture": {
             "browserDetailedMode": "rolling-day seat-level Web Worker",
             "yearlyPersistenceMode": "OceanBase route-day aggregate facts",
+            "routeContractMode": "OceanBase route variants + ordered stops + per-segment geometry",
             "rendering": "Mapbox WebGL",
             "computeParallelism": "Python multiprocessing for annual generation; browser Web Worker for live day",
         },
@@ -663,6 +769,239 @@ def load_route_geometry(conn, routes: list[dict[str, Any]], batch_size: int) -> 
     )
 
 
+def load_route_variants(conn, routes: list[dict[str, Any]], batch_size: int) -> None:
+    variant_rows = []
+    stop_rows = []
+    segment_rows = []
+    geometry_rows = []
+    for route in routes:
+        for variant in route_variants(route):
+            variant_rows.append(
+                (
+                    variant["variant_id"],
+                    value(route, "id"),
+                    variant["direction"],
+                    variant["origin"],
+                    variant["destination"],
+                    variant["origin_province"],
+                    variant["destination_province"],
+                    len(variant["stops"]),
+                    len(variant["segments"]),
+                    number(route, "totalDistanceKm"),
+                    variant["stop_sequence_hash"],
+                    json.dumps([stop.get("name") for stop in variant["stops"]], ensure_ascii=False, separators=(",", ":")),
+                    value(route, "provenance"),
+                    1,
+                )
+            )
+            for stop_index, stop in enumerate(variant["stops"]):
+                stop_rows.append(
+                    (
+                        variant["variant_id"],
+                        value(route, "id"),
+                        variant["direction"],
+                        stop_index,
+                        value(stop, "id"),
+                        value(stop, "name"),
+                        value(stop, "province"),
+                        value(stop, "city"),
+                        value(stop, "tier"),
+                        number(stop, "lng"),
+                        number(stop, "lat"),
+                        int(stop.get("dwellMinutes") or 0),
+                        1 if stop.get("simulatedStop") else 0,
+                    )
+                )
+            for segment_index, segment in enumerate(variant["segments"]):
+                geometry = segment.get("geometry") or []
+                segment_rows.append(
+                    (
+                        variant["variant_id"],
+                        value(route, "id"),
+                        variant["direction"],
+                        segment_index,
+                        value(segment, "from"),
+                        value(segment, "to"),
+                        number(segment, "distanceKm"),
+                        int(segment.get("speedLimitKmh") or 0),
+                        value(segment, "track"),
+                        value(segment, "signaling"),
+                        value(segment, "geometrySource"),
+                        len(geometry),
+                    )
+                )
+                geometry_rows.append(
+                    (
+                        variant["variant_id"],
+                        value(route, "id"),
+                        variant["direction"],
+                        segment_index,
+                        value(segment, "geometrySource"),
+                        len(geometry),
+                        json.dumps(geometry, separators=(",", ":")),
+                    )
+                )
+
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO route_variants
+          (route_variant_id, route_id, direction, origin, destination, origin_province, destination_province,
+           stop_count, segment_count, total_distance_km, stop_sequence_hash, stop_sequence_json, provenance, is_active)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          route_id=VALUES(route_id), direction=VALUES(direction), origin=VALUES(origin), destination=VALUES(destination),
+          origin_province=VALUES(origin_province), destination_province=VALUES(destination_province),
+          stop_count=VALUES(stop_count), segment_count=VALUES(segment_count), total_distance_km=VALUES(total_distance_km),
+          stop_sequence_hash=VALUES(stop_sequence_hash), stop_sequence_json=VALUES(stop_sequence_json),
+          provenance=VALUES(provenance), is_active=VALUES(is_active)
+        """,
+        variant_rows,
+        batch_size,
+    )
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO route_variant_stops
+          (route_variant_id, route_id, direction, stop_index, station_id, name, province, city, tier,
+           lng, lat, dwell_minutes, simulated_stop)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          route_id=VALUES(route_id), direction=VALUES(direction), station_id=VALUES(station_id),
+          name=VALUES(name), province=VALUES(province), city=VALUES(city), tier=VALUES(tier),
+          lng=VALUES(lng), lat=VALUES(lat), dwell_minutes=VALUES(dwell_minutes), simulated_stop=VALUES(simulated_stop)
+        """,
+        stop_rows,
+        batch_size,
+    )
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO route_variant_segments
+          (route_variant_id, route_id, direction, segment_index, from_station, to_station,
+           distance_km, speed_limit_kmh, track_type, signaling, geometry_source, geometry_point_count)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          route_id=VALUES(route_id), direction=VALUES(direction), from_station=VALUES(from_station),
+          to_station=VALUES(to_station), distance_km=VALUES(distance_km), speed_limit_kmh=VALUES(speed_limit_kmh),
+          track_type=VALUES(track_type), signaling=VALUES(signaling), geometry_source=VALUES(geometry_source),
+          geometry_point_count=VALUES(geometry_point_count)
+        """,
+        segment_rows,
+        batch_size,
+    )
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO route_variant_geometry
+          (route_variant_id, route_id, direction, segment_index, geometry_source, coordinate_count, coordinates_json)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          route_id=VALUES(route_id), direction=VALUES(direction), geometry_source=VALUES(geometry_source),
+          coordinate_count=VALUES(coordinate_count), coordinates_json=VALUES(coordinates_json)
+        """,
+        geometry_rows,
+        batch_size,
+    )
+
+
+def load_rail_tracks(conn, rail_features: list[dict[str, Any]], batch_size: int) -> None:
+    rows = []
+    for index, feature in enumerate(rail_features):
+        props = feature.get("properties") or {}
+        geometry = feature.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
+        osm_id = str(props.get("osm_id") or "")
+        track_id = f"rail-{osm_id or 'feature'}-{index}"
+        rows.append(
+            (
+                track_id,
+                osm_id,
+                str(props.get("name") or ""),
+                str(props.get("gauge") or ""),
+                str(props.get("electrified") or ""),
+                str(props.get("usage") or ""),
+                1 if props.get("hsr") else 0,
+                len(coordinates),
+                json.dumps(props, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(geometry, ensure_ascii=False, separators=(",", ":")),
+            )
+        )
+    if not rows:
+        return
+    bulk_execute(
+        conn,
+        """
+        INSERT INTO rail_tracks
+          (rail_track_id, osm_id, name, gauge, electrified, usage_type, hsr,
+           coordinate_count, properties_json, geometry_json)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          osm_id=VALUES(osm_id), name=VALUES(name), gauge=VALUES(gauge), electrified=VALUES(electrified),
+          usage_type=VALUES(usage_type), hsr=VALUES(hsr), coordinate_count=VALUES(coordinate_count),
+          properties_json=VALUES(properties_json), geometry_json=VALUES(geometry_json)
+        """,
+        rows,
+        batch_size,
+    )
+
+
+def route_variants(route: dict[str, Any]) -> list[dict[str, Any]]:
+    route_id = value(route, "id")
+    contract = route.get("routeContract") or {}
+    stops = route.get("stops", [])
+    segments = route.get("segments", [])
+    return [
+        {
+            "variant_id": contract.get("outboundVariantId") or f"{route_id}:outbound",
+            "direction": "outbound",
+            "origin": value(route, "origin"),
+            "destination": value(route, "destination"),
+            "origin_province": value(route, "originProvince"),
+            "destination_province": value(route, "destinationProvince"),
+            "stops": stops,
+            "segments": segments,
+            "stop_sequence_hash": contract.get("stopSequenceHash") or stop_sequence_hash(stops),
+        },
+        {
+            "variant_id": contract.get("returnVariantId") or f"{route_id}:return",
+            "direction": "return",
+            "origin": value(route, "destination"),
+            "destination": value(route, "origin"),
+            "origin_province": value(route, "destinationProvince"),
+            "destination_province": value(route, "originProvince"),
+            "stops": list(reversed(stops)),
+            "segments": [reverse_segment(segment) for segment in reversed(segments)],
+            "stop_sequence_hash": stop_sequence_hash(list(reversed(stops))),
+        },
+    ]
+
+
+def reverse_segment(segment: dict[str, Any]) -> dict[str, Any]:
+    reversed_segment = dict(segment)
+    reversed_segment["from"] = value(segment, "to")
+    reversed_segment["to"] = value(segment, "from")
+    reversed_segment["geometry"] = list(reversed(segment.get("geometry") or []))
+    return reversed_segment
+
+
+def stop_sequence_hash(stops: list[dict[str, Any]]) -> str:
+    payload = ">".join(str(stop.get("id") or stop.get("name") or "") for stop in stops)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def build_route_contract_summary(routes: list[dict[str, Any]], rail_features: list[dict[str, Any]]) -> dict[str, int]:
+    stop_rows = sum(len(route.get("stops", [])) for route in routes)
+    segment_rows = sum(len(route.get("segments", [])) for route in routes)
+    return {
+        "routeVariants": len(routes) * 2,
+        "routeVariantStops": stop_rows * 2,
+        "routeVariantSegments": segment_rows * 2,
+        "routeVariantGeometry": segment_rows * 2,
+        "railTracks": len(rail_features),
+    }
+
+
 def insert_calendar_summary(conn, rows: list[tuple[Any, ...]], batch_size: int) -> None:
     bulk_execute(
         conn,
@@ -757,6 +1096,11 @@ def query_table_counts(conn, run_id: str) -> dict[str, int]:
         "routeStops": ("SELECT COUNT(*) FROM route_stops", None),
         "routeSegments": ("SELECT COUNT(*) FROM route_segments", None),
         "routeGeometry": ("SELECT COUNT(*) FROM route_geometry", None),
+        "routeVariants": ("SELECT COUNT(*) FROM route_variants", None),
+        "routeVariantStops": ("SELECT COUNT(*) FROM route_variant_stops", None),
+        "routeVariantSegments": ("SELECT COUNT(*) FROM route_variant_segments", None),
+        "routeVariantGeometry": ("SELECT COUNT(*) FROM route_variant_geometry", None),
+        "railTracks": ("SELECT COUNT(*) FROM rail_tracks", None),
         "simulationRuns": ("SELECT COUNT(*) FROM simulation_runs", None),
         "dailyRouteServicesForRun": ("SELECT COUNT(*) FROM daily_route_services WHERE run_id = %s", (run_id,)),
         "calendarSummaryForRun": ("SELECT COUNT(*) FROM calendar_summary WHERE run_id = %s", (run_id,)),

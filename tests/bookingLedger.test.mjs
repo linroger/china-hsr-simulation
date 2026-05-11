@@ -14,7 +14,7 @@ const route = {
   type: 'G',
   origin: 'A',
   destination: 'D',
-  totalDistanceKm: 300,
+  totalDistanceKm: 3000,
   frequencyRank: 0.7,
   stops: [
     { name: 'A', lng: 116, lat: 39, tier: 'national-hub' },
@@ -23,9 +23,9 @@ const route = {
     { name: 'D', lng: 119, lat: 39, tier: 'regional-hub' },
   ],
   segments: [
-    { from: 'A', to: 'B', distanceKm: 100 },
-    { from: 'B', to: 'C', distanceKm: 100 },
-    { from: 'C', to: 'D', distanceKm: 100 },
+    { from: 'A', to: 'B', distanceKm: 1000 },
+    { from: 'B', to: 'C', distanceKm: 1000 },
+    { from: 'C', to: 'D', distanceKm: 1000 },
   ],
 };
 

@@ -153,3 +153,16 @@ test('route deduplication keeps OD pairs roughly unique per direction', () => {
   // generated set should be rare. Allow up to 5% to account for that.
   assert.ok(duplicates <= routeData.routes.length * 0.05, `expected <5% directed-pair duplicates, saw ${duplicates}/${routeData.routes.length}`);
 });
+
+test('every generated route has an ordered outbound and return route contract', () => {
+  const routeData = JSON.parse(fs.readFileSync(new URL('../public/route-data.json', import.meta.url), 'utf8'));
+  for (const route of routeData.routes) {
+    assert.ok(route.routeContract, `${route.id} should expose a route contract`);
+    assert.equal(route.routeContract.outboundVariantId, `${route.id}:outbound`);
+    assert.equal(route.routeContract.returnVariantId, `${route.id}:return`);
+    assert.match(route.routeContract.stopSequenceHash, /^[a-f0-9]{16}$/);
+    assert.deepEqual(route.routeContract.stopSequence, route.stops.map((stop) => stop.name));
+    assert.deepEqual(route.routeContract.returnStopSequence, route.stops.map((stop) => stop.name).reverse());
+    assert.equal(route.segments.length, route.stops.length - 1, `${route.id} must have one fewer segment than stops`);
+  }
+});

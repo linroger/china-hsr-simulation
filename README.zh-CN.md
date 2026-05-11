@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-16%2F16%20passing-brightgreen)](#11-测试策略)
+[![Tests](https://img.shields.io/badge/tests-22%2F22%20passing-brightgreen)](#11-测试策略)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇺🇸 **[English README](./README.md)**
@@ -62,7 +62,7 @@
 - **OceanBase 年度持久化** —— Python 多进程 ETL 生成全年 438,000 条线路-日期服务事实,通过 OceanBase 的 MySQL 兼容接口批量写入本机 OceanBase Desktop。
 - **空间算法** —— Haversine 大圆距离、垂直距离剪枝、按弧长参数化的折线插值、自研**0.35°×0.35° 网格哈希索引**,把生成的线路区段贴合到真实 OSM 铁路走廊上。
 - **浏览器多线程** —— 整个仿真引擎从 React/Mapbox UI 主线程**剥离至 Web Worker**;UI 与引擎之间通过强类型、Promise 化的消息总线交换 `init`、`start`、`setSpeed`、`quoteTrip`、`bookTrip`、`snapshot` 等指令。
-- **工程严谨性** —— 确定性种子伪随机数 (FNV-1a)、20 项回归测试覆盖订票语义、定价单调性、失约释放、动态需求、换日滚动、列车单调推进、无直连捷径线路几何、OceanBase 年度生成、数据多样性与订票流水导入,外加 `./run.sh` 一键脚本完成依赖安装、数据生成、测试、构建、上线全流程。
+- **工程严谨性** —— 确定性种子伪随机数 (FNV-1a)、22 项回归测试覆盖订票语义、定价单调性、失约释放、动态需求、换日滚动、列车单调推进、终点折返、无直连捷径线路几何、OceanBase 线路契约、数据多样性与订票流水导入,外加 `./run.sh` 一键脚本完成依赖安装、数据生成、测试、构建、上线全流程。
 
 > **面向蚂蚁集团、阿里巴巴、腾讯、百度、华为等公司的招聘官与工程师** —— 项目刻意保持精简(手写核心逻辑约 2,000 行),却同时覆盖了**算法、分布式系统思维、运筹优化/收益管理、全栈 React 工程、地理信息系统(GIS)与端到端产品故事**。
 
@@ -136,7 +136,7 @@ npm run serve          # http://127.0.0.1:5174/
 | **铁路匹配总体** | **100.0%**(rail-traced + 走廊采样),0 条长距离直线退化段 |
 | **几何连续性** | 231,757 个坐标转换中 0 条长距离直连捷径,6,138 个段间边界全部连续 |
 | **快照推送频率** | 150 ms / 次,从 Worker → UI |
-| **测试通过率** | 20/20(座位库存、定价、引擎、单调推进、失约、动态需求、换日滚动、OceanBase dry-run、数据多样性、几何校验、OSM 补充、去重、订票流水、退票流水、导入 dry-run) |
+| **测试通过率** | 22/22(座位库存、定价、引擎、单调推进、终点折返、失约、动态需求、换日滚动、OceanBase dry-run、线路契约、数据多样性、几何校验、OSM 补充、去重、订票流水、退票流水、导入 dry-run) |
 
 ---
 
@@ -309,32 +309,40 @@ bidPrice@93%   >  bidPrice@15%
 
 | 方法 | 功能 |
 |---|---|
-| `createScheduledServices(routes, maxTrains)` | 从 1,200 条线路生成 1,500 列车次,按周期循环复用线路以模拟同一线路的多班次。 |
-| `tick(realSeconds)` | 推进 `nowMinutes`,更新所有列车,每 8 个 tick 触发一次实时需求售票。 |
-| `updateTrain(train)` | 累加 `segmentMinutes[]`,推进区段索引,完成 `scheduled → running → completed` 状态切换。 |
+| `createScheduledServices(routes, maxTrains)` | 从 1,200 条持久化线路契约生成滚动服务日列车计划。 |
+| `tick(realSeconds)` | 推进 `nowMinutes`,更新所有列车,每 6 个 tick 触发一次实时需求售票。 |
+| `updateTrain(train)` | 累加 `segmentMinutes[]`,推进区段索引;列车到达终点后进入折返停站,随后按同一站序的反向线路返回,最终回到始发站才完成。 |
 | `processStation(train, idx)` | 处理上车/下车/失约逻辑,原地变更订票状态。 |
 | `quoteTrip(...)` | 纯只读价格计算,内置 `performance.now()` 计时,把 `algorithmMs` 暴露到 UI。 |
 | `bookTrip(...)` | 通过 `quoteTrip + inventory.allocate` 串行化读-改-写;若询价与提交之间座位日历改变,则回滚。 |
-| `snapshot()` | 构建 700 列上限的 `{ 在途 ∪ 临近发车 ∪ 刚到达 }` 快照,附带完整订票选项、网络汇总、统计数据。 |
+| `snapshot()` | 构建 1,500 列上限的 `{ 在途 ∪ 临近发车 ∪ 刚到达 }` 快照,附带订票选项、网络汇总、统计数据。 |
 
-Worker 内 tick 频率为 **20 Hz**(50 ms),但向 UI 推快照只 **4 Hz**(250 ms) —— 这种**生产/消费速率解耦**让 Mapbox `setData` 调用始终落在 React 60 fps 预算内。
+Worker 内 tick 频率为 **20 Hz**(50 ms),但向 UI 推快照为每 **150 ms** 一次 —— 这种**生产/消费速率解耦**让 Mapbox `setData` 调用始终落在 React 60 fps 预算内。
 
 #### 状态机
 
 ```
-                    达到 departureMinute
+                    达到去程 departureMinute
    scheduled ──────────────────────────────────────► running
                                                        │
-                              已耗时 ≥ Σ segmentMinutes
+                              已耗时 ≥ Σ 去程 segmentMinutes
+                                                       ▼
+                                                终点折返停站
+                                                       │
+                              达到返程 departureMinute
+                                                       ▼
+                                                    running
+                                                       │
+                              已耗时 ≥ Σ 返程 segmentMinutes
                                                        ▼
                                                     completed
 ```
 
-`processedStationIndexes` 是个 `Set`,使 `processStation` 在时钟抖动下仍**幂等**(单次 tick 可能跨越某站点),保证每个站点的上下车事件**仅触发一次**。
+每列车一次只绑定一个有序线路变体:去程使用 `route.stops[0..n]`,返程使用完全反向的站序与反向区段几何。`processedStationIndexes` 每条 leg 重置为新的 `Set`,使 `processStation` 在时钟抖动下仍**幂等**(单次 tick 可能跨越某站点),保证每个站点的上下车事件**仅触发一次**,并避免列车在 A-B-A 之间振荡,除非这种站序被明确写入持久化线路契约。
 
 #### 实时需求压力
 
-每 8 个 tick(`tickCounter % 8 === 0`),`sellRealtimeDemand` 注入 10 笔订票请求,选车权重为:
+每 6 个 tick(`tickCounter % 6 === 0`),`sellRealtimeDemand` 注入实时订票请求,选车权重为:
 
 ```
 weight(train) = max(0.1, frequencyRank + 0.2)
@@ -556,7 +564,7 @@ new SimulationWorkerClient({ onSnapshot })
    - `national-hub`:站名匹配 `北京|上海|广州|深圳|成都|重庆|武汉|郑州|西安|南京|杭州|长沙|天津`
    - `regional-hub`:`sourceCount ≥ 4` 或站名末尾含 `南/西/东/北` 方位词
    - `local`:其他
-2. **`route-data.json`** —— 1,200 条仿真线路,含完整区段几何;同时保留 7,278 条原始记录以追溯出处。
+2. **`route-data.json`** —— 1,200 条仿真线路,含完整区段几何与显式 `routeContract` 去程/返程线路契约;同时保留 7,278 条原始记录以追溯出处。
 3. **`hsr-stations.geojson`** —— Mapbox 即用的车站点要素。
 4. **`hsr-rails.geojson`** —— Mapbox 即用的铁路线要素(≤ 8,000、≤ 82 万顶点)。
 
@@ -609,7 +617,7 @@ new SimulationWorkerClient({ onSnapshot })
 
 ###  Schema 设计
 
-种子脚本创建一个**星型 Schema**,包含 5 张维度/查找表和 3 张事实表:
+种子脚本创建一个**星型 Schema**,包含线路契约查找表、原始轨道几何和事实表:
 
 ```sql
 -- 维度表
@@ -618,6 +626,14 @@ routes            (route_id PK, code, train_no, route_type, origin, destination,
 route_stops       (route_id, stop_index PK, station_id, name, province, ...)
 route_segments    (route_id, segment_index PK, from_station, to_station, distance_km, ...)
 route_geometry    (route_id, segment_index PK, geometry_source, coordinate_count, coordinates_json)
+route_variants    (route_variant_id PK, route_id, direction, origin, destination, stop_sequence_json)
+route_variant_stops
+                  (route_variant_id, stop_index PK, station_id, name, province, ...)
+route_variant_segments
+                  (route_variant_id, segment_index PK, from_station, to_station, ...)
+route_variant_geometry
+                  (route_variant_id, segment_index PK, geometry_source, coordinate_count, coordinates_json)
+rail_tracks       (rail_track_id PK, osm_id, name, properties_json, geometry_json)
 
 -- 事实表
 simulation_runs   (run_id PK, start_date, end_date, days, route_count, station_count,
@@ -634,7 +650,7 @@ calendar_summary
    total_train_services, total_passengers, total_revenue)
 ```
 
-`route_geometry` 表把铁路图追踪生成的折线以 JSON 数组形式持久化,使分析型 SQL 可直接读取线路几何而无需访问浏览器侧。`calendar_summary` 表提供按日的预聚合,支持类似 *"春运 vs 暑运的日均客流差异"* 之类的分析查询而无需扫描线路-日期事实表。所有维度表使用 `ON DUPLICATE KEY UPDATE`,重复运行幂等;事实表按 `run_id` 先清空再插入,避免脏数据。
+`route_geometry` 表把铁路图追踪生成的正向折线以 JSON 数组形式持久化,使分析型 SQL 可直接读取线路几何而无需访问浏览器侧。`route_variants` 及其子表同时持久化 `outbound` 与 `return` 两个方向的线路契约,可直接查询任意线路经过哪些站、返程站序是否为精确反向。`rail_tracks` 保存渲染用 HOTOSM 轨道 GeoJSON,便于把服务线路几何与底层轨道层做审计。`calendar_summary` 表提供按日的预聚合,支持类似 *"春运 vs 暑运的日均客流差异"* 之类的分析查询而无需扫描线路-日期事实表。所有维度/契约表使用 `ON DUPLICATE KEY UPDATE`,重复运行幂等;事实表按 `run_id` 先清空再插入,避免脏数据。
 
 此外还有第 4 张事实表 `bookings` —— **实时订票流水**:每张确认/退票的车票从浏览器 Worker 经 `/ingest-bookings` HTTP 端点串流至 `scripts/oceanbase_booking_ingest.py`,后者批量 upsert 进 OceanBase。这弥补了过去"订票仅存在于浏览器内存"的可恢复性缺口。
 
@@ -754,7 +770,7 @@ KEY idx_bookings_run        (run_id)
 
 ### 幂等性、原子性与重跑
 
-- **维度表**(`stations`、`routes`、`route_stops`、`route_segments`、`route_geometry`)全部使用 `INSERT … ON DUPLICATE KEY UPDATE`。对已有数据的集群重跑种子是安全的,不会产生重复。
+- **维度表/线路契约表**(`stations`、`routes`、`route_stops`、`route_segments`、`route_geometry`、`route_variants`、`route_variant_*`、`rail_tracks`)全部使用 `INSERT … ON DUPLICATE KEY UPDATE`。对已有数据的集群重跑种子是安全的,不会产生重复。
 - **`daily_route_services`** 在插入前按 `run_id` 清空(`DELETE FROM daily_route_services WHERE run_id = %s`),确保每个 `run_id` 是干净的快照。不同 `run_id` 可并存(如基线运行与 what-if 限流运行的 A/B 对比)。
 - **批量插入** 以 `batch_size=4000` 为单位,每批显式 `conn.commit()`。批 *n* 之后失败,不会丢失前 *n* 批已提交数据;同一 `run_id` 重跑可恢复。
 - **`bookings`** 用 `ON DUPLICATE KEY UPDATE` 以 `ticket_id` 为键,允许同一张车票从 `confirmed` 被覆盖为 `cancelled` 或 `noShow`,无孤儿行。
@@ -811,6 +827,12 @@ SELECT segment_index, geometry_source, coordinate_count,
 FROM   route_geometry
 WHERE  route_id = 'route-12-D703'
 ORDER  BY segment_index;
+
+-- 查询某条线路返程经过的精确站序
+SELECT stop_index, name, province, tier
+FROM   route_variant_stops
+WHERE  route_variant_id = 'route-12-D703:return'
+ORDER  BY stop_index;
 ```
 
 ### 运维手册
@@ -849,8 +871,8 @@ curl -s http://127.0.0.1:5174/ingest-bookings \
 
 | 操作 | 行数 | 耗时 | 吞吐 |
 |---|---:|---:|---:|
-| `chinahsr` schema 引导(8 条 `CREATE TABLE`) | — | ~80 ms | — |
-| 维度表加载(`stations`+`routes`+`route_stops`+`route_segments`+`route_geometry`) | ~26 K | ~520 ms | ~50 K 行/秒 |
+| `chinahsr` schema 引导(14 条 `CREATE TABLE`) | — | 待重新实测 | — |
+| 维度/线路契约加载(`stations`+线路/站序/几何变体+`rail_tracks`) | ~72 K | 待重新实测 | — |
 | 全年事实表生成(Python 多进程) | 438 K | ~1.6 s | ~270 K 行/秒 |
 | 全年事实表写入(PyMySQL `executemany`,batch 4 K) | 438 K | ~7 s | ~62 K 行/秒 |
 | `calendar_summary` upsert | 365 | ~70 ms | ~5 K 行/秒 |

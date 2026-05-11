@@ -8,6 +8,7 @@ const MIN_DAILY_TRAINS_PER_ROUTE = 2;
 const SNAPSHOT_TRAIN_LIMIT = 1500;
 const TRAIN_SEAT_QUOTA = 554;
 const SERVICE_YEAR_DAYS = 365;
+const TERMINAL_TURNAROUND_MINUTES = 18;
 const SERVICE_DAY_START_YEAR = 2026;
 const SERVICE_DAY_START_MONTH = 0;
 const SERVICE_DAY_START_DAY = 1;
@@ -53,6 +54,7 @@ export class SimulationEngine {
     this.tickCounter = 0;
     this.lastTickMs = null;
     this.bookingCounter = 0;
+    this.bookingOptionsDirty = false;
     if (preloadDemand) this.preloadDemand();
     this.tick(0);
   }
@@ -79,17 +81,29 @@ export class SimulationEngine {
     const serviceSuffix = serviceIndex > 0 ? `-${serviceIndex + 1}` : '';
     const dayPrefix = calendar.dayIndex > 0 ? `day${calendar.dayIndex + 1}-` : '';
     const delayMinutes = Math.max(0, Math.round(segmentMinutes.reduce((sum, minutes) => sum + minutes, 0) - plannedRuntimes.reduce((sum, minutes) => sum + minutes, 0)));
+    const outboundVariantId = route.routeContract?.outboundVariantId || `${route.id}:outbound`;
+    const returnVariantId = route.routeContract?.returnVariantId || `${route.id}:return`;
     return {
       id: `${dayPrefix}${route.id}${serviceSuffix}`,
       routeId: route.id,
+      routeVariantId: outboundVariantId,
+      outboundVariantId,
+      returnVariantId,
+      routeStopSequenceHash: route.routeContract?.stopSequenceHash || stopSequenceHash(route.stops),
       code: serviceIndex > 0 ? `${route.code}.${serviceIndex + 1}` : route.code,
       type: route.type,
       origin: route.origin,
       destination: route.destination,
+      originalOrigin: route.origin,
+      originalDestination: route.destination,
       originProvince: route.originProvince,
       destinationProvince: route.destinationProvince,
       corridor: route.corridor,
       calendar,
+      baseRoute: route,
+      direction: 'outbound',
+      legIndex: 0,
+      maxLegIndex: 1,
       stops: route.stops,
       segments: route.segments,
       totalDistanceKm: route.totalDistanceKm,
@@ -105,6 +119,9 @@ export class SimulationEngine {
       currentSegmentIndex: 0,
       segmentProgress: 0,
       processedStationIndexes: new Set(),
+      completedLegs: [],
+      terminalTurnaroundMinutes: route.terminalTurnaroundMinutes || TERMINAL_TURNAROUND_MINUTES,
+      turnaroundDepartureMinute: null,
       completed: false,
       bookings: [],
       algorithmMetrics: [],
@@ -296,15 +313,62 @@ export class SimulationEngine {
       if (finalStop > 0 && !train.processedStationIndexes.has(finalStop)) {
         this.processStation(train, finalStop);
       }
+      if (train.direction === 'outbound' && this.prepareReturnLeg(train)) return;
+      this.recordCompletedLeg(train);
       train.completed = true;
       train.status = 'completed';
       train.currentSegmentIndex = train.segmentMinutes.length - 1;
       train.segmentProgress = 1;
       this.logEvent('arrival', `${train.code} completed ${train.origin} to ${train.destination}.`);
+      this.bookingOptionsDirty = true;
       return;
     }
     train.currentSegmentIndex = segmentIndex;
     train.segmentProgress = elapsed / train.segmentMinutes[segmentIndex];
+  }
+
+  prepareReturnLeg(train) {
+    const route = train.baseRoute;
+    if (!route || train.direction === 'return') return false;
+    this.recordCompletedLeg(train);
+    const returnStops = reverseStops(route.stops);
+    const returnSegments = reverseSegments(route.segments);
+    train.direction = 'return';
+    train.legIndex = 1;
+    train.routeVariantId = train.returnVariantId || `${train.routeId}:return`;
+    train.origin = route.destination;
+    train.destination = route.origin;
+    train.originProvince = route.destinationProvince;
+    train.destinationProvince = route.originProvince;
+    train.stops = returnStops;
+    train.segments = returnSegments;
+    train.inventory = new SeatInventory(returnStops);
+    train.bookings = [];
+    train.departureMinute = this.nowMinutes + train.terminalTurnaroundMinutes;
+    train.turnaroundDepartureMinute = train.departureMinute;
+    train.segmentMinutes = (train.segmentMinutes || []).slice().reverse();
+    train.plannedSegmentMinutes = (train.plannedSegmentMinutes || []).slice().reverse();
+    train.status = 'scheduled';
+    train.currentSegmentIndex = 0;
+    train.segmentProgress = 0;
+    train.processedStationIndexes = new Set();
+    train.completed = false;
+    this.bookingOptionsDirty = true;
+    this.logEvent('turnaround', `${train.code} reached ${route.destination}; returning to ${route.origin} at ${formatClock(train.departureMinute)} via the same stops in reverse order.`);
+    return true;
+  }
+
+  recordCompletedLeg(train) {
+    const last = train.completedLegs[train.completedLegs.length - 1];
+    if (last?.direction === train.direction) return;
+    train.completedLegs.push({
+      direction: train.direction,
+      routeVariantId: train.routeVariantId,
+      origin: train.origin,
+      destination: train.destination,
+      stopNames: train.stops.map((stop) => stop.name),
+      processedStationIndexes: [...train.processedStationIndexes].sort((a, b) => a - b),
+    });
   }
 
   processStation(train, stationIndex) {
@@ -511,6 +575,12 @@ export class SimulationEngine {
     const calendar = calendarState(this.nowMinutes);
     const serialized = this.trains.map((train) => serializeTrain(train, this.nowMinutes));
     const visibleTrains = selectVisibleTrains(serialized, SNAPSHOT_TRAIN_LIMIT);
+    let bookingOptions;
+    if (includeBookingOptions || this.bookingOptionsDirty) {
+      this.bookingOptions = this.createBookingOptions();
+      this.bookingOptionsDirty = false;
+      bookingOptions = this.bookingOptions;
+    }
     return {
       nowMinutes: Math.round(this.nowMinutes),
       calendar,
@@ -539,7 +609,7 @@ export class SimulationEngine {
       bookings: this.bookings.slice(-12).reverse(),
       events: this.events,
       trains: visibleTrains,
-      bookingOptions: includeBookingOptions ? this.bookingOptions : undefined,
+      bookingOptions,
       network: networkSummary(serialized),
     };
   }
@@ -553,6 +623,8 @@ export class SimulationEngine {
       id: train.id,
       code: train.code,
       routeId: train.routeId,
+      routeVariantId: train.routeVariantId,
+      direction: train.direction,
       origin: train.origin,
       destination: train.destination,
       corridor: train.corridor,
@@ -839,29 +911,39 @@ function increment(map, key, train) {
 }
 
 function serializeTrain(train, nowMinutes) {
-  const from = train.stops[train.currentSegmentIndex] || train.stops[0];
-  const to = train.stops[train.currentSegmentIndex + 1] || from;
-  const segment = train.segments[train.currentSegmentIndex];
-  const coords = interpolateLine(segment?.geometry, train.segmentProgress || 0) || interpolateCoord(from, to, train.segmentProgress || 0);
-  const activeLoad = train.inventory.occupancyForSegment(train.currentSegmentIndex);
-  const classLoads = Object.fromEntries(CLASS_ORDER.map((seatClass) => [seatClass, train.inventory.occupancyForSegment(train.currentSegmentIndex, seatClass)]));
+  const safeSegmentIndex = Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1));
+  const displaySegmentIndex = train.status === 'completed' ? Math.max(0, (train.stops?.length || 1) - 2) : safeSegmentIndex;
+  const segmentProgress = train.status === 'completed' ? 1 : (train.segmentProgress || 0);
+  const from = train.stops[displaySegmentIndex] || train.stops[0];
+  const to = train.stops[displaySegmentIndex + 1] || from;
+  const segment = train.segments[displaySegmentIndex];
+  const coords = interpolateLine(segment?.geometry, segmentProgress) || interpolateCoord(from, to, segmentProgress);
+  const activeLoad = train.inventory.occupancyForSegment(safeSegmentIndex);
+  const classLoads = Object.fromEntries(CLASS_ORDER.map((seatClass) => [seatClass, train.inventory.occupancyForSegment(safeSegmentIndex, seatClass)]));
   const currentDelayMinutes = currentDelay(train);
   return {
     id: train.id,
     code: train.code,
     type: train.type,
+    routeId: train.routeId,
+    routeVariantId: train.routeVariantId,
+    direction: train.direction,
+    legIndex: train.legIndex,
     origin: train.origin,
     destination: train.destination,
+    originalOrigin: train.originalOrigin,
+    originalDestination: train.originalDestination,
     originProvince: train.originProvince,
     destinationProvince: train.destinationProvince,
     corridor: train.corridor,
-    currentStation: from.name,
+    currentStation: train.status === 'completed' ? to.name : from.name,
     nextStation: to.name,
     coords,
     status: train.status,
-    currentSegmentIndex: train.currentSegmentIndex,
-    progress: train.segmentProgress,
-    routeProgress: Math.round(((train.currentSegmentIndex + (train.segmentProgress || 0)) / Math.max(1, train.segmentMinutes.length)) * 1000000) / 1000000,
+    currentSegmentIndex: displaySegmentIndex,
+    progress: segmentProgress,
+    routeProgress: Math.round(((displaySegmentIndex + segmentProgress) / Math.max(1, train.segmentMinutes.length)) * 1000000) / 1000000,
+    journeyProgress: Math.round((((train.legIndex || 0) + ((displaySegmentIndex + segmentProgress) / Math.max(1, train.segmentMinutes.length))) / Math.max(1, (train.maxLegIndex || 0) + 1)) * 1000000) / 1000000,
     loadFactor: activeLoad.loadFactor,
     passengerCount: activeLoad.occupied,
     capacity: activeLoad.capacity,
@@ -873,7 +955,33 @@ function serializeTrain(train, nowMinutes) {
     delayMinutes: train.delayMinutes,
     currentDelayMinutes,
     minutesToDeparture: Math.round(train.departureMinute - nowMinutes),
+    turnaroundDepartureMinute: train.turnaroundDepartureMinute,
   };
+}
+
+function reverseStops(stops = []) {
+  return stops.slice().reverse().map((stop) => ({ ...stop }));
+}
+
+function reverseSegments(segments = []) {
+  return segments.slice().reverse().map((segment) => ({
+    ...segment,
+    from: segment.to,
+    to: segment.from,
+    geometry: (segment.geometry || []).slice().reverse().map((coord) => Array.isArray(coord) ? coord.slice() : coord),
+  }));
+}
+
+function stopSequenceHash(stops = []) {
+  let hash = 2166136261;
+  for (const stop of stops) {
+    const key = `${stop.id || ''}:${stop.name || ''}>`;
+    for (const char of key) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function average(values) {

@@ -112,6 +112,9 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
               <Realism label="Routes" value={annual.oceanbase?.tables?.routes?.toLocaleString() || '—'} />
               <Realism label="Route stops" value={annual.oceanbase?.tables?.routeStops?.toLocaleString() || '—'} />
               <Realism label="Route segments" value={annual.oceanbase?.tables?.routeSegments?.toLocaleString() || '—'} />
+              <Realism label="Route variants" value={annual.oceanbase?.tables?.routeVariants?.toLocaleString() || annual.routeContract?.routeVariants?.toLocaleString() || '—'} />
+              <Realism label="Variant stops" value={annual.oceanbase?.tables?.routeVariantStops?.toLocaleString() || annual.routeContract?.routeVariantStops?.toLocaleString() || '—'} />
+              <Realism label="Rail tracks" value={annual.oceanbase?.tables?.railTracks?.toLocaleString() || annual.routeContract?.railTracks?.toLocaleString() || '—'} />
               <Realism label="Daily service facts" value={annual.oceanbase?.tables?.dailyRouteServicesForRun?.toLocaleString() || '—'} />
               <Realism label="Render backend" value={annual.architecture?.rendering || 'Mapbox WebGL'} />
             </div>

@@ -87,5 +87,18 @@
       "Verify the browser simulation can roll from January 1 to January 2 with a fresh detailed service day"
     ],
     "passes": true
+  },
+  {
+    "id": "feature_route_contracts_and_terminal_return",
+    "category": "simulation",
+    "description": "Persist queryable outbound and return route variants in OceanBase, expose ordered station sequences for every route, and make trains reverse at terminal stations to return through the same stations in reverse order.",
+    "steps": [
+      "Regenerate route-data.json and verify each route has an outbound and return route contract with ordered station names",
+      "Run the OceanBase seed in skip-db mode and verify the summary reports route variants, variant stops, variant geometry, and raw rail-track counts",
+      "Advance a train from origin to terminal and verify it changes to return direction instead of oscillating or completing permanently",
+      "Verify the return leg uses the same stations and segments in exact reverse order",
+      "Advance the train back to the original station and verify it completes only after the return leg"
+    ],
+    "passes": true
   }
 ]

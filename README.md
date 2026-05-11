@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-16%2F16%20passing-brightgreen)](#11-testing-strategy)
+[![Tests](https://img.shields.io/badge/tests-22%2F22%20passing-brightgreen)](#11-testing-strategy)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇨🇳 **[中文版 README](./README.zh-CN.md)**
@@ -58,11 +58,11 @@ This repository is a small but uncompromising attempt to model how a **nationwid
 
 - **Online interval scheduling** — the classic *can a seat be re-sold to a downstream passenger?* problem, solved as an interval-overlap calendar with O(k) check, O(k log k) insertion, and tested deterministically.
 - **Revenue management / yield management** — multi-factor dynamic pricing combining distance fares, sigmoid-scarcity bid prices, time-to-departure pressure, peak surcharges, frequency relief, no-show buffers, and price elasticity.
-- **Discrete-event simulation (DES)** — a 20 Hz tick loop driving 6,000 detailed rolling-day train services across 1,200 routes, with planned-vs-actual delay modeling, no-show seat release, station-pressure metrics, and service-day rollover through the 365-day calendar.
+- **Discrete-event simulation (DES)** — a 20 Hz tick loop driving 6,000 detailed rolling-day train services across 1,200 routes, with ordered route contracts, terminal turnaround return trips, planned-vs-actual delay modeling, no-show seat release, station-pressure metrics, and service-day rollover through the 365-day calendar.
 - **OceanBase annual persistence** — a multiprocessing Python ETL creates 438,000 route-day service facts for a full year and bulk-loads them into OceanBase Desktop through its MySQL-compatible interface.
 - **Spatial algorithms** — Haversine great-circle distance, perpendicular-distance pruning, polyline arc-length interpolation, and a custom **0.35°×0.35° grid hash index** that snaps generated route segments onto real OSM rail corridors.
 - **Multithreading in the browser** — the entire simulation engine is moved off the React/Mapbox UI thread into a Web Worker; UI ↔ engine communicate through a typed promise-based message bus that handles `init`, `start`, `setSpeed`, `quoteTrip`, `bookTrip`, and `snapshot` traffic.
-- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 20 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, monotonic train movement, no-shortcut route geometry, OceanBase annual generation, data diversity, and booking-ledger ingestion, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
+- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 22 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, monotonic train movement, terminal return trips, no-shortcut route geometry, OceanBase route contracts, data diversity, and booking-ledger ingestion, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
 
 > **Designed for recruiters and engineers at Ant Group, Alibaba, Tencent, Baidu, Huawei** — the codebase is intentionally small (~2,000 LoC of hand-written logic) yet covers algorithms, distributed-systems reasoning, OR/yield management, full-stack TypeScript-equivalent React, GIS, and an end-to-end product story.
 
@@ -136,7 +136,7 @@ npm run serve          # http://127.0.0.1:5174/
 | **Rail-matched total** | **100.0 %** (rail-traced + corridor-sampled) — 0 long straight-line fallbacks |
 | **Geometry continuity** | 0 segment-boundary discontinuities, 0 long direct shortcuts in 231,757 coordinate transitions |
 | **Snapshot interval** | 150 ms from worker → UI |
-| **Tests** | 20/20 passing (booking, pricing, engine, monotonic movement, no-show, live demand, day rollover, OceanBase dry-run, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run) |
+| **Tests** | 22/22 passing (booking, pricing, engine, monotonic movement, terminal return trips, no-show, live demand, day rollover, OceanBase dry-run, route contracts, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run) |
 
 ---
 
@@ -309,32 +309,40 @@ bidPrice@93%   >  bidPrice@15%
 
 | Method | Purpose |
 |---|---|
-| `createScheduledServices(routes, maxTrains)` | Generates 1,500 train services from 1,200 routes, cycling through routes for second/third daily services. |
-| `tick(realSeconds)` | Advances `nowMinutes` by `realSeconds × speed / 60`, updates every train, sells live demand every 8 ticks. |
-| `updateTrain(train)` | Advances segment index by accumulating elapsed time over `segmentMinutes[]`; transitions `scheduled → running → completed`. |
+| `createScheduledServices(routes, maxTrains)` | Generates the rolling-day detailed service plan from 1,200 persisted route contracts. |
+| `tick(realSeconds)` | Advances `nowMinutes` by `realSeconds × speed / 60`, updates every train, sells live demand every 6 ticks. |
+| `updateTrain(train)` | Advances segment index by accumulating elapsed time over `segmentMinutes[]`; transitions outbound trains into a terminal turnaround return leg and completes only after the return reaches the original station. |
 | `processStation(train, idx)` | Per-station boarding/alighting/no-show logic, mutates booking statuses in-place. |
 | `quoteTrip(...)` | Pure read-only price computation, instrumented with `performance.now()` to expose `algorithmMs` to the UI. |
 | `bookTrip(...)` | Serializable read-modify-write through `quoteTrip` + `inventory.allocate`; rolls back if the seat calendar shifted between quote and commit. |
-| `snapshot()` | Builds a 700-train cap of `{ active ∪ near-term ∪ recently-completed }`, plus full booking-options list, network roll-up, and stats. |
+| `snapshot()` | Builds a 1,500-train cap of `{ active ∪ near-term ∪ recently-completed }`, plus booking-options list, network roll-up, and stats. |
 
-The tick frequency is **20 Hz** (50 ms) inside the worker, but snapshots ship to the UI at **4 Hz** (250 ms) — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget.
+The tick frequency is **20 Hz** (50 ms) inside the worker, but snapshots ship to the UI every **150 ms** — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget.
 
 #### State machine
 
 ```
-                    departureMinute reached
+                 outbound departureMinute reached
    scheduled ─────────────────────────────────► running
                                                    │
-                              elapsed ≥ Σ segmentMinutes
+                              elapsed ≥ Σ outbound segmentMinutes
+                                                   ▼
+                                        terminal turnaround dwell
+                                                   │
+                              return departureMinute reached
+                                                   ▼
+                                                running
+                                                   │
+                                elapsed ≥ Σ return segmentMinutes
                                                    ▼
                                                 completed
 ```
 
-`processedStationIndexes` is a `Set` to make `processStation` idempotent under tick clock jitter (a tick may straddle a station crossing), so boarding events fire exactly once per stop.
+Each train is assigned one ordered route variant at a time. The outbound variant uses `route.stops[0..n]`; the return variant uses the exact reverse stop sequence and reversed segment geometries. `processedStationIndexes` is reset per leg and remains a `Set` so `processStation` is idempotent under tick clock jitter (a tick may straddle a station crossing), which prevents A-B-A oscillation unless that sequence is explicitly present in the persisted route contract.
 
 #### Live-demand pressure
 
-Every 8 ticks (`tickCounter % 8 === 0`), `sellRealtimeDemand` injects 10 booking requests biased by:
+Every 6 ticks (`tickCounter % 6 === 0`), `sellRealtimeDemand` injects booking requests biased by:
 
 ```
 weight(train) = max(0.1, frequencyRank + 0.2)
@@ -557,7 +565,7 @@ This is the same pattern used in production by VS Code's extension host, Figma's
    - `national-hub`: 36-name lookup table covering provincial capitals and major HSR hubs (北京/上海/广州/深圳/成都/重庆/武汉/郑州/西安/南京/杭州/长沙/天津/昆明/南宁/福州/厦门/哈尔滨/沈阳/大连/长春/济南/青岛/合肥/南昌/贵阳/乌鲁木齐/呼和浩特/银川/西宁/兰州/太原/石家庄/香港西九龙) plus their named directional sub-stations
    - `regional-hub`: `sourceCount ≥ 4` or name ends with a cardinal `南/西/东/北` suffix
    - `local`: everything else
-2. **`route-data.json`** — 1,200 simulation routes with full per-segment **rail-traced** geometry, plus all 7,278 raw service records for provenance. Routes are deduplicated per directed (origin, destination) pair, keeping the highest-frequency variant.
+2. **`route-data.json`** — 1,200 simulation routes with full per-segment **rail-traced** geometry, explicit `routeContract` metadata for outbound/return variants, plus all 7,278 raw service records for provenance. Routes are deduplicated per directed (origin, destination) pair, keeping the highest-frequency variant.
 3. **`hsr-stations.geojson`** — Mapbox-ready station Point features.
 4. **`hsr-rails.geojson`** — Mapbox-ready rail LineString features (≤ 12,000, ≤ 1.4 M vertices), prioritising HSR-named lines (高速 / 客运 / 城际 / 动车 / 高铁).
 
@@ -609,7 +617,7 @@ The project operates in two complementary modes:
 
 ### Schema design
 
-The seed script creates a **star schema** with five dimension/lookup tables and four fact tables:
+The seed script creates a **star schema** with route-contract lookup tables, raw rail-track storage, and four fact tables:
 
 ```sql
 -- Dimension tables
@@ -618,6 +626,14 @@ routes            (route_id PK, code, train_no, route_type, origin, destination,
 route_stops       (route_id, stop_index PK, station_id, name, province, ...)
 route_segments    (route_id, segment_index PK, from_station, to_station, distance_km, ...)
 route_geometry    (route_id, segment_index PK, geometry_source, coordinate_count, coordinates_json)
+route_variants    (route_variant_id PK, route_id, direction, origin, destination, stop_sequence_json)
+route_variant_stops
+                  (route_variant_id, stop_index PK, station_id, name, province, ...)
+route_variant_segments
+                  (route_variant_id, segment_index PK, from_station, to_station, ...)
+route_variant_geometry
+                  (route_variant_id, segment_index PK, geometry_source, coordinate_count, coordinates_json)
+rail_tracks       (rail_track_id PK, osm_id, name, properties_json, geometry_json)
 
 -- Fact tables
 simulation_runs   (run_id PK, start_date, end_date, days, route_count, station_count,
@@ -640,7 +656,9 @@ bookings
    booked_at_minute, booked_at_clock, service_date, status, no_show)
 ```
 
-- `route_geometry` persists rail-traced polylines as JSON arrays so analytical SQL can pull route geometry without hitting the browser.
+- `route_geometry` persists canonical outbound rail-traced polylines as JSON arrays so analytical SQL can pull route geometry without hitting the browser.
+- `route_variants` and its child tables persist both `outbound` and `return` route contracts. A train never chooses its next station opportunistically; it advances monotonically through the active variant's ordered stops, then flips to the return variant at the terminal.
+- `rail_tracks` stores the rendered HOTOSM rail GeoJSON features as queryable raw track geometry. Route geometry can therefore be audited against both the generated service route and the underlying rail layer.
 - `calendar_summary` is a per-day rollup that supports analyst queries like *"average passenger load on Spring Festival vs. summer peak"* without scanning the route-day fact table.
 - `bookings` is a **live booking ledger**: every confirmed/cancelled ticket is streamed from the browser worker through a small `/ingest-bookings` HTTP endpoint into `scripts/oceanbase_booking_ingest.py`, which bulk-upserts it into OceanBase. This closes the long-standing gap that bookings only lived in browser memory.
 
@@ -822,6 +840,15 @@ SELECT segment_index, geometry_source, coordinate_count,
 FROM   route_geometry
 WHERE  route_id = 'route-12-D703'
 ORDER  BY segment_index;
+
+-- Query the exact station order for a train's return route
+SELECT rvs.stop_index,
+       rvs.name,
+       rvs.province,
+       rvs.tier
+FROM   route_variant_stops rvs
+WHERE  rvs.route_variant_id = 'route-12-D703:return'
+ORDER  BY rvs.stop_index;
 ```
 
 ### Operational runbook
@@ -860,8 +887,8 @@ Measured locally against OceanBase Desktop (single-tenant, 4 CPU, 8 GB RAM):
 
 | Operation | Rows | Time | Throughput |
 |---|---:|---:|---:|
-| `chinahsr` schema bootstrap (8 `CREATE TABLE` statements) | — | ~80 ms | — |
-| Dimension load (`stations` + `routes` + `route_stops` + `route_segments` + `route_geometry`) | ~26 K | ~520 ms | ~50 K rows/s |
+| `chinahsr` schema bootstrap (14 `CREATE TABLE` statements) | — | pending live remeasure | — |
+| Dimension load (`stations` + routes/stops/segments/geometries + route variants + raw rail tracks) | ~72 K | pending live remeasure | — |
 | Annual fact-table generation (Python multiprocessing) | 438 K | ~1.6 s | ~270 K rows/s |
 | Annual fact-table insert (PyMySQL `executemany`, batch 4 K) | 438 K | ~7 s | ~62 K rows/s |
 | `calendar_summary` upsert | 365 | ~70 ms | ~5 K rows/s |

@@ -37,6 +37,11 @@ test('OceanBase annual generator produces uncapped route-day summary without dat
     assert.ok(summary.estimatedPassengers > summary.totalTrainServices * 200);
     assert.ok(summary.estimatedRevenue > 0);
     assert.ok(summary.surgeDayCount > 0);
+    assert.equal(summary.routeContract.routeVariants, summary.routeCount * 2);
+    assert.equal(summary.routeContract.routeVariantSegments, summary.routeContract.routeVariantGeometry);
+    assert.ok(summary.routeContract.routeVariantStops > summary.routeContract.routeVariants * 2);
+    assert.ok(summary.routeContract.railTracks > 1000);
+    assert.match(summary.architecture.routeContractMode, /route variants/i);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

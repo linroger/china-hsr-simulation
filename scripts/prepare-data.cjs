@@ -24,6 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 class BinaryHeap {
   constructor() {
@@ -446,8 +447,12 @@ function buildRoute(record, index) {
     });
   }
   const key = [record.origin, record.destination].sort().join('|');
+  const routeId = `route-${index}-${record.code}`;
+  const stopSequence = stops.map((stop) => stop.name);
+  const stopSequenceIds = stops.map((stop) => stop.id || stop.name);
+  const stopSequenceHash = hashSequence(stopSequenceIds);
   return {
-    id: `route-${index}-${record.code}`,
+    id: routeId,
     code: record.code,
     trainNo: record.trainNo,
     type: record.type,
@@ -459,10 +464,24 @@ function buildRoute(record, index) {
     originProvince: origin.province,
     destinationProvince: destination.province,
     provenance: 'Real train origin/destination; intermediate stops simulation-derived from station geography; geometry path-traced over OSM rail graph when possible.',
+    routeContract: {
+      version: 1,
+      routeId,
+      outboundVariantId: `${routeId}:outbound`,
+      returnVariantId: `${routeId}:return`,
+      stopSequence,
+      returnStopSequence: stopSequence.slice().reverse(),
+      stopSequenceHash,
+      source: 'ordered route stop sequence persisted for OceanBase and runtime validation',
+    },
     stops,
     segments,
     geometry: mergeSegmentGeometries(segments),
   };
+}
+
+function hashSequence(values) {
+  return crypto.createHash('sha256').update(values.join('>')).digest('hex').slice(0, 16);
 }
 
 function pickIntermediateStops(origin, destination, totalKm, stopTarget, referencePath) {
