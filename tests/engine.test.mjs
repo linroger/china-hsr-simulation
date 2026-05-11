@@ -101,6 +101,37 @@ test('engine rolls detailed services forward across the full-year calendar', () 
   assert.equal(snapshot.bookingOptions[0].serviceDate, 'Jan 2');
 });
 
+test('train movement is monotonic and processes every crossed station once', () => {
+  const engine = new SimulationEngine({ routes: [route], seed: 44, maxTrains: 1, preloadDemand: false });
+  const train = engine.getTrain('r1');
+  const departureMinute = engine.nowMinutes;
+  train.departureMinute = departureMinute;
+  train.segmentMinutes = [3, 3, 3];
+  train.plannedSegmentMinutes = [3, 3, 3];
+  train.status = 'scheduled';
+  train.currentSegmentIndex = 0;
+  train.segmentProgress = 0;
+  train.processedStationIndexes = new Set();
+
+  let lastProgress = -1;
+  for (const offset of [0, 1, 3, 4.5, 6, 8.99, 9, 12]) {
+    engine.nowMinutes = departureMinute + offset;
+    engine.updateTrain(train);
+    const snapshotTrain = engine.snapshot().trains.find((item) => item.id === train.id);
+    const routeProgress = snapshotTrain?.routeProgress ?? 1;
+    assert.ok(routeProgress + 0.000001 >= lastProgress, `route progress regressed at offset ${offset}`);
+    lastProgress = routeProgress;
+  }
+
+  assert.equal(train.completed, true);
+  assert.deepEqual([...train.processedStationIndexes].sort((a, b) => a - b), [0, 1, 2, 3]);
+
+  engine.nowMinutes = departureMinute + 2;
+  engine.updateTrain(train);
+  assert.equal(train.completed, true, 'completed train must not regress when the clock is moved backward');
+  assert.deepEqual([...train.processedStationIndexes].sort((a, b) => a - b), [0, 1, 2, 3]);
+});
+
 test('no-show passengers release their seat inventory after departure', () => {
   const engine = new SimulationEngine({ routes: [route], seed: 3, maxTrains: 1 });
   const train = engine.getTrain('r1');

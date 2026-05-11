@@ -266,21 +266,29 @@ export class SimulationEngine {
   updateTrain(train) {
     if (train.completed) return;
     if (this.nowMinutes < train.departureMinute) return;
+    const previousProgressKey = train.currentSegmentIndex + (train.segmentProgress || 0);
     const wasScheduled = train.status === 'scheduled';
-    train.status = 'running';
-    if (wasScheduled) this.processStation(train, 0);
     let elapsed = this.nowMinutes - train.departureMinute;
     let segmentIndex = 0;
-    while (segmentIndex < train.segmentMinutes.length && elapsed > train.segmentMinutes[segmentIndex]) {
+    const crossedStationIndexes = [];
+    while (segmentIndex < train.segmentMinutes.length && elapsed >= train.segmentMinutes[segmentIndex]) {
       elapsed -= train.segmentMinutes[segmentIndex];
       segmentIndex += 1;
-      // Process stations crossed during this tick. Without this, fast simulation
-      // (or large speed multipliers) can skip boarding/alighting events when a
-      // single tick straddles multiple segments.
-      const stationIndex = segmentIndex;
-      if (stationIndex < train.stops.length && stationIndex > train.currentSegmentIndex) {
-        this.processStation(train, stationIndex);
-      }
+      crossedStationIndexes.push(segmentIndex);
+    }
+    const nextProgressKey = segmentIndex >= train.segmentMinutes.length
+      ? train.segmentMinutes.length
+      : segmentIndex + (elapsed / train.segmentMinutes[segmentIndex]);
+
+    // Keep the train state machine monotonic. The UI and worker normally only
+    // advance time, but this guard prevents any future replay/speed-control
+    // path from making a running train move backward between two stations.
+    if (!wasScheduled && nextProgressKey + 1e-6 < previousProgressKey) return;
+
+    train.status = 'running';
+    if (wasScheduled) this.processStation(train, 0);
+    for (const stationIndex of crossedStationIndexes) {
+      if (stationIndex < train.stops.length) this.processStation(train, stationIndex);
     }
     if (segmentIndex >= train.segmentMinutes.length) {
       // Final station processing in case the destination wasn't covered above.
@@ -853,6 +861,7 @@ function serializeTrain(train, nowMinutes) {
     status: train.status,
     currentSegmentIndex: train.currentSegmentIndex,
     progress: train.segmentProgress,
+    routeProgress: Math.round(((train.currentSegmentIndex + (train.segmentProgress || 0)) / Math.max(1, train.segmentMinutes.length)) * 1000000) / 1000000,
     loadFactor: activeLoad.loadFactor,
     passengerCount: activeLoad.occupied,
     capacity: activeLoad.capacity,

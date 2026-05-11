@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { SimulationEngine } from '../src/simulation_core/SimulationEngine.js';
+
+const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
 
 const route = {
   id: 'ledger-route',
@@ -60,4 +66,51 @@ test('cancellations append a status=cancelled ledger entry', () => {
   const cancelEntry = drained.find((entry) => entry.ticketId === result.booking.ticketId);
   assert.ok(cancelEntry, 'cancellation must produce a ledger entry');
   assert.equal(cancelEntry.status, 'cancelled');
+});
+
+test('OceanBase booking ingest dry-run validates rows and skips malformed ledger entries', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chinahsr-ledger-test-'));
+  const inputPath = path.join(tempDir, 'bookings.ndjson');
+  try {
+    fs.writeFileSync(inputPath, [
+      JSON.stringify({
+        ticketId: 'TVALID001',
+        trainId: 'G1',
+        trainCode: 'G1',
+        routeId: 'r1',
+        passengerId: 'P1',
+        passengerName: 'Alpha',
+        origin: 'A',
+        destination: 'B',
+        originIndex: 0,
+        destinationIndex: 1,
+        seatClass: 'secondClass',
+        seats: ['1-01A'],
+        price: 88.5,
+        distanceKm: 120,
+        bookedAtMinute: 480,
+        bookedAtClock: '08:00',
+        serviceDate: '2026-01-01',
+        status: 'confirmed',
+      }),
+      JSON.stringify({ trainId: 'missing-ticket', routeId: 'r1', origin: 'A', destination: 'B' }),
+      '{not-json',
+    ].join('\n') + '\n', 'utf8');
+
+    const output = execFileSync('python3', [
+      'scripts/oceanbase_booking_ingest.py',
+      '--input',
+      inputPath,
+      '--dry-run',
+    ], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    assert.match(output, /dry-run validated 1 bookings/);
+    assert.match(output, /skipped 2/);
+    assert.equal(fs.existsSync(inputPath), true, 'dry-run must not delete replayable ledger files');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });

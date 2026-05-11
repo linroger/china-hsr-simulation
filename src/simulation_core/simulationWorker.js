@@ -139,12 +139,13 @@ async function flushLedger() {
   if (!drained.length) return;
   const ndjson = drained.map((entry) => JSON.stringify(entry)).join('\n');
   try {
-    await fetch(ledgerEndpoint, {
+    const response = await fetch(ledgerEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-ndjson' },
       body: ndjson,
       keepalive: true,
     });
+    if (!response.ok) throw new Error(`Ledger ingest failed with HTTP ${response.status}`);
   } catch (error) {
     // Re-queue on failure so we try again next interval. Cap at 4000 to bound memory.
     engine.ledger = engine.ledger ? [...drained, ...engine.ledger].slice(-4000) : drained.slice(-4000);

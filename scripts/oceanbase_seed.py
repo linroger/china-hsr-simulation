@@ -371,15 +371,25 @@ def connect_oceanbase(config: dict[str, Any]):
         import pymysql
     except ImportError as exc:
         raise SystemExit("PyMySQL is required for OceanBase loading. Install it with python3 -m pip install PyMySQL.") from exc
-    return pymysql.connect(
-        host=config["host"],
-        port=config["port"],
-        user=config["user"],
-        password=config["password"],
-        database=config["database"],
-        charset="utf8mb4",
-        autocommit=False,
-    )
+    try:
+        return pymysql.connect(
+            host=config["host"],
+            port=config["port"],
+            user=config["user"],
+            password=config["password"],
+            database=config["database"],
+            charset="utf8mb4",
+            autocommit=False,
+            connect_timeout=8,
+        )
+    except pymysql.err.OperationalError as exc:
+        raise SystemExit(
+            "Unable to connect to OceanBase at "
+            f"{config['host']}:{config['port']} database={config['database']}. "
+            "Start OceanBase Desktop / the MySQL-mode tenant, verify OB_HOST/OB_PORT/OB_DATABASE/OB_USER, "
+            "or run with --skip-db to produce a local annual summary without loading tables. "
+            f"Driver error: {exc.args[0] if exc.args else exc}"
+        ) from None
 
 
 def load_static_dimension_tables(conn, stations: list[dict[str, Any]], routes: list[dict[str, Any]], batch_size: int) -> None:

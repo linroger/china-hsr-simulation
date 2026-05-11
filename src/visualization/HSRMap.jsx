@@ -249,6 +249,7 @@ function interpolateTrainSet(previousTrains = [], targetTrains = [], progress = 
   return targetTrains.map((train) => {
     const previous = previousById.get(train.id);
     if (!previous?.coords || !train.coords || previous.status !== train.status) return train;
+    if (isRouteRegression(previous, train) || isLargeRouteJump(previous, train)) return train;
     return {
       ...train,
       coords: {
@@ -257,6 +258,22 @@ function interpolateTrainSet(previousTrains = [], targetTrains = [], progress = 
       },
     };
   });
+}
+
+function isRouteRegression(previous, train) {
+  if (!Number.isFinite(previous.routeProgress) || !Number.isFinite(train.routeProgress)) return false;
+  return train.routeProgress + 0.00001 < previous.routeProgress;
+}
+
+function isLargeRouteJump(previous, train) {
+  const previousSegment = Number(previous.currentSegmentIndex);
+  const currentSegment = Number(train.currentSegmentIndex);
+  if (Number.isFinite(previousSegment) && Number.isFinite(currentSegment) && Math.abs(currentSegment - previousSegment) > 1) {
+    return true;
+  }
+  const lngDelta = Math.abs((train.coords.lng || 0) - (previous.coords.lng || 0));
+  const latDelta = Math.abs((train.coords.lat || 0) - (previous.coords.lat || 0));
+  return Math.max(lngDelta, latDelta) > 0.35;
 }
 
 function easeInOut(value) {

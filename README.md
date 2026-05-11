@@ -62,7 +62,7 @@ This repository is a small but uncompromising attempt to model how a **nationwid
 - **OceanBase annual persistence** — a multiprocessing Python ETL creates 438,000 route-day service facts for a full year and bulk-loads them into OceanBase Desktop through its MySQL-compatible interface.
 - **Spatial algorithms** — Haversine great-circle distance, perpendicular-distance pruning, polyline arc-length interpolation, and a custom **0.35°×0.35° grid hash index** that snaps generated route segments onto real OSM rail corridors.
 - **Multithreading in the browser** — the entire simulation engine is moved off the React/Mapbox UI thread into a Web Worker; UI ↔ engine communicate through a typed promise-based message bus that handles `init`, `start`, `setSpeed`, `quoteTrip`, `bookTrip`, and `snapshot` traffic.
-- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 10 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, OceanBase annual generation, and data diversity, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
+- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 20 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, monotonic train movement, no-shortcut route geometry, OceanBase annual generation, data diversity, and booking-ledger ingestion, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
 
 > **Designed for recruiters and engineers at Ant Group, Alibaba, Tencent, Baidu, Huawei** — the codebase is intentionally small (~2,000 LoC of hand-written logic) yet covers algorithms, distributed-systems reasoning, OR/yield management, full-stack TypeScript-equivalent React, GIS, and an end-to-end product story.
 
@@ -132,11 +132,11 @@ npm run serve          # http://127.0.0.1:5174/
 | **Detailed seat objects in rolling day** | ~3.32 million seat calendars for the active service day |
 | **OSM rail-corridor features (rendering)** | 12,000 LineString features after simplification |
 | **OSM rail graph for path-tracing** | 254,501 nodes / 275,919 edges built from 347,132 rail features |
-| **Rail-traced route segments** | **70.4 %** path-traced via A\* over the rail graph |
-| **Rail-matched total** | **99.4 %** (rail-traced + corridor-sampled) — only 0.6 % straight-line fallback |
-| **Geometry continuity** | 0 segment-boundary discontinuities, 0 large coord jumps in 218,127 transitions |
+| **Rail-traced route segments** | **82.8 %** path-traced via A\* over the rail graph |
+| **Rail-matched total** | **100.0 %** (rail-traced + corridor-sampled) — 0 long straight-line fallbacks |
+| **Geometry continuity** | 0 segment-boundary discontinuities, 0 long direct shortcuts in 231,757 coordinate transitions |
 | **Snapshot interval** | 150 ms from worker → UI |
-| **Tests** | 16/16 passing (booking, pricing, engine, no-show, live demand, day rollover, OceanBase dry-run, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger) |
+| **Tests** | 20/20 passing (booking, pricing, engine, monotonic movement, no-show, live demand, day rollover, OceanBase dry-run, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run) |
 
 ---
 
@@ -398,17 +398,17 @@ function dijkstraPath(network, startId, goalId, directKm) {
 
 1. **Douglas-Peucker simplified** to ≤ 70 vertices per segment with adaptive tolerance (0.0008°–0.0035° depending on segment length) — preserves visible curvature while shrinking the route file from 78 MB → 13 MB.
 2. **Coordinate rounded** to 5 decimals (~1.1 m precision).
-3. **Big-jump repair pass** — any residual coord-to-coord jump > 0.45° is interpolated linearly. 1,280 segments needed minor repair.
+3. **Big-jump repair pass** — any residual coord-to-coord jump > 0.45° is interpolated linearly. 1,536 segments needed minor repair, and the regression suite now separately rejects long single-hop shortcuts.
 
 **Stage 4 — Fallbacks.** When A\* fails (e.g., off-graph stations on incomplete OSM data), the algorithm falls back to **corridor sampling** (the older bbox-based candidate-vertex approach), and finally to a straight chord. Current breakdown:
 
 | Geometry source | Coverage |
 |---|---:|
-| `rail-traced` (A\* over rail graph) | **70.4 %** |
-| `hotosm-rail-corridor` (corridor sampling) | 29.0 % |
-| `station-straight-fallback` (chord) | 0.6 % |
+| `rail-traced` (A\* over rail graph) | **82.8 %** |
+| `hotosm-rail-corridor` (corridor sampling) | 17.2 % |
+| `station-straight-fallback` (chord) | 0.0 % |
 
-The result is **0 large coordinate jumps and 0 segment-boundary discontinuities** across 218,127 transitions and 6,301 segment-to-segment boundaries.
+The result is **0 long direct shortcuts and 0 segment-boundary discontinuities** across 231,757 coordinate transitions and 6,138 segment-to-segment boundaries.
 
 #### Polyline arc-length interpolation
 
@@ -664,7 +664,7 @@ SimulationEngine.bookTrip()           ─►  ledger.push(entry)
 - **Idempotent**: `ON DUPLICATE KEY UPDATE` lets cancellations and status flips overwrite the original confirm row instead of inserting duplicates.
 - **Backpressure-tolerant**: when OceanBase is unreachable, the worker re-queues the failed batch (capped at 4,000 entries) and retries on the next interval. The browser keeps working — only the persistence trail pauses.
 - **Opt-out**: if `OB_PASSWORD` is not set or `CHINAHSR_DISABLE_INGEST=1`, the static server still buffers NDJSON files into `/tmp/chinahsr-ledger/` so they can be replayed later.
-- **Observable**: `GET /healthz` reports `{ ledgerIngest: true|false, ledgerDir: "..." }`.
+- **Observable**: `GET /healthz` reports ledger ingest status plus queue metadata (`pendingFiles`, `pendingBytes`, oldest/newest pending file), and `GET /ledger-stats` exposes the same replay queue summary directly.
 
 All dimension tables use `ON DUPLICATE KEY UPDATE` so repeated runs are idempotent. The fact table is wiped per `run_id` before insertion to avoid stale data.
 
@@ -944,11 +944,13 @@ tests/
 │                                    ≥50% rail-traced (graph-followed),
 │                                    Xi'an coverage regression
 ├── geometryValidation.test.mjs   ← segment continuity (0 boundary breaks),
+│                                    endpoint anchoring, no long direct shortcuts,
 │                                    rail-traced polyline density,
 │                                    OSM augmentation regression for missing hubs,
 │                                    route deduplication audit
 ├── bookingLedger.test.mjs        ← every booking captured with rich metadata,
-│                                    cancellations append status=cancelled
+│                                    cancellations append status=cancelled,
+│                                    OceanBase ingest dry-run skips malformed rows
 └── oceanbaseSeed.test.mjs        ← 30-day OceanBase dry-run produces uncapped totals
 ```
 
@@ -968,16 +970,18 @@ Sample output:
 ✔ engine creates scalable scheduled services and full booking options
 ✔ calendar starts on January 1 and applies route-level surge service planning
 ✔ engine rolls detailed services forward across the full-year calendar
+✔ train movement is monotonic and processes every crossed station once
 ✔ no-show passengers release their seat inventory after departure
 ✔ live demand changes revenue and passenger totals during ticks
 ✔ every route segment connects continuously to the next
+✔ segment geometry is anchored to station endpoints and avoids long direct shortcuts
 ✔ rail-traced segments have plausible polyline density
 ✔ OSM augmentation surfaces national hubs missing from station CSV
 ✔ route deduplication keeps OD pairs roughly unique per direction
 ✔ OceanBase annual generator produces uncapped route-day summary without database credentials
 ✔ dynamic pricing orders seat classes and rises with scarcity
 ✔ same seat is reusable after passenger alights but blocked for overlapping intervals
-ℹ tests 14
+ℹ tests 20
 ℹ pass  14
 ℹ fail  0
 ```

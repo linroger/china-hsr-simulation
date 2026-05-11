@@ -29,7 +29,13 @@ const server = http.createServer((request, response) => {
 
   if (request.method === 'GET' && pathname === '/healthz') {
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ ok: true, ledgerIngest: ENABLE_OB_INGEST, ledgerDir: LEDGER_DIR }));
+    response.end(JSON.stringify({ ok: true, ledgerIngest: ENABLE_OB_INGEST, ledgerDir: LEDGER_DIR, ledger: ledgerStats() }));
+    return;
+  }
+
+  if (request.method === 'GET' && pathname === '/ledger-stats') {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ ok: true, ...ledgerStats() }));
     return;
   }
 
@@ -96,6 +102,26 @@ function runIngestProcess(filePath, count) {
   child.on('error', (error) => {
     console.error('[serve] failed to spawn booking ingest:', error.message);
   });
+}
+
+function ledgerStats() {
+  const files = fs.readdirSync(LEDGER_DIR)
+    .filter((name) => name.endsWith('.ndjson'))
+    .map((name) => {
+      const filePath = path.join(LEDGER_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { name, path: filePath, bytes: stat.size, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const pendingBytes = files.reduce((sum, file) => sum + file.bytes, 0);
+  return {
+    ingestEnabled: ENABLE_OB_INGEST,
+    dir: LEDGER_DIR,
+    pendingFiles: files.length,
+    pendingBytes,
+    oldestPendingFile: files[0]?.name || null,
+    newestPendingFile: files[files.length - 1]?.name || null,
+  };
 }
 
 server.listen(PORT, HOST, () => {

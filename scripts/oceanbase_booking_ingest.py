@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument('--run-id', default='live-browser')
     parser.add_argument('--batch-size', type=int, default=500)
     parser.add_argument('--keep-input', action='store_true', help='Do not delete the input file after load')
+    parser.add_argument('--dry-run', action='store_true', help='Validate and count rows without requiring OceanBase credentials')
     args = parser.parse_args()
 
     input_path = Path(args.input).resolve()
@@ -35,6 +36,7 @@ def main() -> int:
         raise SystemExit(f'Input file not found: {input_path}')
 
     rows: list[tuple[Any, ...]] = []
+    skipped = 0
     with input_path.open('r', encoding='utf-8') as fh:
         for line in fh:
             line = line.strip()
@@ -44,11 +46,20 @@ def main() -> int:
                 booking = json.loads(line)
             except json.JSONDecodeError as exc:
                 print(f'  warning: skipping invalid JSON line: {exc}', file=sys.stderr)
+                skipped += 1
                 continue
-            rows.append(booking_to_row(booking, args.run_id))
+            row = booking_to_row(booking, args.run_id)
+            if row is None:
+                skipped += 1
+                continue
+            rows.append(row)
 
     if not rows:
         print('[oceanbase:booking-ingest] no rows to ingest')
+        return 0
+
+    if args.dry_run:
+        print(f'[oceanbase:booking-ingest] dry-run validated {len(rows)} bookings from {input_path.name} (skipped {skipped})')
         return 0
 
     password = os.environ.get('OB_PASSWORD')
@@ -98,12 +109,17 @@ def main() -> int:
     if not args.keep_input:
         input_path.unlink(missing_ok=True)
 
-    print(f'[oceanbase:booking-ingest] inserted/upserted {inserted} bookings from {input_path.name}')
+    print(f'[oceanbase:booking-ingest] inserted/upserted {inserted} bookings from {input_path.name} (skipped {skipped})')
     return 0
 
 
-def booking_to_row(booking: dict[str, Any], run_id: str) -> tuple[Any, ...]:
+def booking_to_row(booking: dict[str, Any], run_id: str) -> tuple[Any, ...] | None:
     seats = booking.get('seats') or []
+    required = ['ticketId', 'trainId', 'routeId', 'origin', 'destination']
+    missing = [field for field in required if not booking.get(field)]
+    if missing:
+        print(f"  warning: skipping booking missing {', '.join(missing)}", file=sys.stderr)
+        return None
     return (
         booking.get('ticketId'),
         booking.get('runId') or run_id,
@@ -119,14 +135,28 @@ def booking_to_row(booking: dict[str, Any], run_id: str) -> tuple[Any, ...]:
         booking.get('seatClass'),
         len(seats),
         json.dumps(seats, ensure_ascii=False, separators=(',', ':'))[:500],
-        float(booking.get('price') or 0),
-        int(booking.get('distanceKm') or 0),
-        int(booking.get('bookedAtMinute') or 0),
+        safe_float(booking.get('price')),
+        safe_int(booking.get('distanceKm')),
+        safe_int(booking.get('bookedAtMinute')),
         booking.get('bookedAtClock') or '',
         booking.get('serviceDate'),
         booking.get('status') or 'confirmed',
         1 if booking.get('noShow') else 0,
     )
+
+
+def safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 if __name__ == '__main__':

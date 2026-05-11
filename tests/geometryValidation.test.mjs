@@ -22,6 +22,47 @@ test('every route segment connects continuously to the next', () => {
   assert.equal(breaks, 0, `expected no segment-boundary discontinuities >0.05 deg, saw ${breaks}/${totalBoundaries}`);
 });
 
+test('segment geometry is anchored to station endpoints and avoids long direct shortcuts', () => {
+  const routeData = JSON.parse(fs.readFileSync(new URL('../public/route-data.json', import.meta.url), 'utf8'));
+  let longStraightFallbacks = 0;
+  let endpointMismatches = 0;
+  let sparseLongSegments = 0;
+  let oversizedHops = 0;
+  let checkedSegments = 0;
+
+  for (const route of routeData.routes) {
+    for (let index = 0; index < route.segments.length; index += 1) {
+      const segment = route.segments[index];
+      const coords = segment.geometry || [];
+      const from = route.stops[index];
+      const to = route.stops[index + 1];
+      checkedSegments += 1;
+
+      if (segment.geometrySource === 'station-straight-fallback' && segment.distanceKm > 80) {
+        longStraightFallbacks += 1;
+      }
+      if (segment.distanceKm > 120 && coords.length < 4) {
+        sparseLongSegments += 1;
+      }
+      if (coords.length >= 2) {
+        const startKm = haversineKm(coords[0], [from.lng, from.lat]);
+        const endKm = haversineKm(coords[coords.length - 1], [to.lng, to.lat]);
+        if (startKm > 2 || endKm > 2) endpointMismatches += 1;
+        for (let i = 1; i < coords.length; i += 1) {
+          const stepKm = haversineKm(coords[i - 1], coords[i]);
+          if (stepKm > 90) oversizedHops += 1;
+        }
+      }
+    }
+  }
+
+  assert.ok(checkedSegments > 7000, `expected thousands of generated route segments, saw ${checkedSegments}`);
+  assert.equal(endpointMismatches, 0, `segment geometries must start/end at their station endpoints; saw ${endpointMismatches} mismatches`);
+  assert.equal(longStraightFallbacks, 0, `long route segments must not fall back to direct station chords; saw ${longStraightFallbacks}`);
+  assert.equal(sparseLongSegments, 0, `long route segments should carry multi-point rail/corridor geometry; saw ${sparseLongSegments}`);
+  assert.equal(oversizedHops, 0, `route geometry should not contain >90 km single-hop shortcuts; saw ${oversizedHops}`);
+});
+
 test('rail-traced segments have plausible polyline density', () => {
   const routeData = JSON.parse(fs.readFileSync(new URL('../public/route-data.json', import.meta.url), 'utf8'));
   const railTraced = routeData.routes.flatMap((route) => route.segments).filter((segment) => segment.geometrySource === 'rail-traced');
@@ -30,6 +71,19 @@ test('rail-traced segments have plausible polyline density', () => {
   assert.ok(avgPoints >= 10, `expected ≥10 average points per rail-traced segment, saw ${avgPoints.toFixed(1)}`);
   assert.ok(avgPoints <= 80, `expected ≤80 average points per rail-traced segment (simplified), saw ${avgPoints.toFixed(1)}`);
 });
+
+function haversineKm(a, b) {
+  const lat1 = toRad(a[1]);
+  const lat2 = toRad(b[1]);
+  const dLat = toRad(b[1] - a[1]);
+  const dLng = toRad(b[0] - a[0]);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function toRad(value) {
+  return value * Math.PI / 180;
+}
 
 test('OSM augmentation surfaces national hubs missing from station CSV', () => {
   const stationData = JSON.parse(fs.readFileSync(new URL('../public/station-data.json', import.meta.url), 'utf8'));
