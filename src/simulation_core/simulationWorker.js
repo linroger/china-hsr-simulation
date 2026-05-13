@@ -53,7 +53,11 @@ self.onmessage = (event) => {
       postSnapshot('booking');
       respond(id, result);
     } else if (type === 'snapshot') {
-      respond(id, engine.snapshot());
+      const snapshot = engine.snapshot();
+      // Sync lastPublishedTrains so subsequent tick deltas remain consistent
+      // with any manual snapshot the frontend may have applied.
+      lastPublishedTrains = new Map(snapshot.trains.map((t) => [t.id, t]));
+      respond(id, snapshot);
     } else {
       throw new Error(`Unknown worker message type: ${type}`);
     }
