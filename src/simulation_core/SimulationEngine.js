@@ -202,7 +202,7 @@ export class SimulationEngine {
     const elapsedSec = this.lastTickMs ? Math.min(0.5, (nowMs - this.lastTickMs) / 1000) : 0.1;
     this.lastTickMs = nowMs;
     this.tick(elapsedSec);
-    this.callbacks.onUpdate?.(this.snapshot());
+    if (this.callbacks.onUpdate) this.callbacks.onUpdate(this.snapshot());
     this.timer = setTimeout(() => this.loop(), 1000 / 20);
   }
 
