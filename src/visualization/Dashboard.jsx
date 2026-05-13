@@ -167,7 +167,7 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
             <div className="train-row" key={train.id}>
               <b>{train.code}</b>
               <span>{train.currentStation} to {train.nextStation}</span>
-              <meter min="0" max="1" value={train.loadFactor} />
+              <meter min="0" max="1" low="0.5" high="0.85" optimum="0.7" value={train.loadFactor} />
               <em>{(train.loadFactor * 100).toFixed(1)}%</em>
             </div>
           ))}
