@@ -27,5 +27,8 @@
     "seedrandom": "^3.0.5",
     "vite": "^8.0.10"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
