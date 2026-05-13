@@ -249,17 +249,23 @@ export class SimulationEngine {
 
   advanceServiceDay(calendar) {
     this.currentServiceDayIndex = calendar.dayIndex;
-    this.trains = this.createScheduledServices(this.routes, this.dailyTrainBudget, calendar);
+    const newTrains = this.createScheduledServices(this.routes, this.dailyTrainBudget, calendar);
+    // SE-2: Retain non-completed trains from previous days instead of
+    // discarding them entirely. This preserves bookings on overnight or
+    // late-running services across the day boundary. Cap retained count
+    // to prevent unbounded memory growth.
+    const retained = this.trains.filter((train) => !train.completed).slice(-2000);
+    this.trains = [...retained, ...newTrains];
     this.trainById = new Map(this.trains.map((train) => [train.id, train]));
     this.bookingOptions = this.createBookingOptions();
     this.preloadCursor = 0;
-    const routeServiceStats = summarizeRouteServices(this.trains, this.routes);
-    this.stats.trainCount = this.trains.length;
+    const routeServiceStats = summarizeRouteServices(newTrains, this.routes);
+    this.stats.trainCount = newTrains.length;
     this.stats.currentServiceDayIndex = this.currentServiceDayIndex;
     this.stats.currentServiceDayNumber = this.currentServiceDayIndex + 1;
-    this.stats.cumulativeTrainServices += this.trains.length;
+    this.stats.cumulativeTrainServices = (this.stats.cumulativeTrainServices || 0) + newTrains.length;
     Object.assign(this.stats, routeServiceStats);
-    this.logEvent('calendar', `${calendar.dateLabel} ${calendar.dayName} service day opened with ${this.trains.length.toLocaleString()} detailed trains.`);
+    this.logEvent('calendar', `${calendar.dateLabel} ${calendar.dayName} service day opened with ${newTrains.length.toLocaleString()} new trains (${retained.length} retained from previous day).`);
     if (this.autoPreloadDemand) this.preloadDemand();
   }
 

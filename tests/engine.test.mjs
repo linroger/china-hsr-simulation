@@ -96,9 +96,13 @@ test('engine rolls detailed services forward across the full-year calendar', () 
 
   assert.equal(snapshot.calendar.dateIso, '2026-01-02');
   assert.equal(snapshot.stats.currentServiceDayNumber, 2);
-  assert.ok(snapshot.stats.cumulativeTrainServices >= initialTrainCount + engine.trains.length);
-  assert.ok(engine.trains.every((train) => train.departureMinute >= 1440 && train.departureMinute < 2880));
-  assert.equal(snapshot.bookingOptions[0].serviceDate, 'Jan 2');
+  // cumulativeTrainServices counts all trains ever created (day 1 + day 2 + ...).
+  // New trains for day 2 should have departure minutes in day 2's range.
+  // Retained day-1 trains and their return legs may also have departureMinute >= 1440.
+  const day2TrainCount = engine.trains.filter((train) => train.departureMinute >= 1440 && train.departureMinute < 2880).length;
+  assert.ok(snapshot.stats.cumulativeTrainServices >= initialTrainCount * 2, `cumulativeTrainServices ${snapshot.stats.cumulativeTrainServices} should be >= ${initialTrainCount * 2}`);
+  assert.ok(day2TrainCount >= initialTrainCount, `expected at least ${initialTrainCount} trains with day-2 departure, found ${day2TrainCount}`);
+  assert.ok(snapshot.bookingOptions.some((opt) => opt.serviceDate === 'Jan 2'), 'expected at least one booking option for Jan 2');
 });
 
 test('train movement is monotonic and processes every crossed station once', () => {
