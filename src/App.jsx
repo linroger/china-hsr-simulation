@@ -62,6 +62,7 @@ export default function App() {
     return () => {
       cancelled = true;
       workerRef.current?.terminate();
+      workerRef.current = null;
     };
   }, []);
 
