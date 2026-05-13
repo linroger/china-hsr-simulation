@@ -719,8 +719,20 @@ export class SimulationEngine {
           return count;
         })(),
       },
-      bookings: this.bookings.slice(-12).reverse(),
-      events: this.events,
+      bookings: (() => {
+        if (this.bookings !== this._lastBookingsRef) {
+          this._lastBookingsRef = this.bookings;
+          this._cachedBookings = this.bookings.slice(-12).reverse();
+        }
+        return this._cachedBookings;
+      })(),
+      events: (() => {
+        if (this.events !== this._lastEventsRef) {
+          this._lastEventsRef = this.events;
+          this._cachedEvents = this.events.slice();
+        }
+        return this._cachedEvents;
+      })(),
       trains: visibleTrains,
       bookingOptions,
       network: networkSummaryFromTrains(this.trains, this.nowMinutes),
