@@ -344,6 +344,10 @@ export class SimulationEngine {
   prepareReturnLeg(train) {
     const route = train.baseRoute;
     if (!route || train.direction === 'return') return false;
+    if (!train.segmentMinutes?.length) {
+      this.logEvent('error', `${train.code} has no segmentMinutes at turnaround; skipping return leg.`);
+      return false;
+    }
     this.recordCompletedLeg(train);
     const returnStops = reverseStops(route.stops);
     const returnSegments = reverseSegments(route.segments);
