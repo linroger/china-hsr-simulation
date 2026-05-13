@@ -162,8 +162,6 @@ function buildOceanBaseExportAttempts() {
   const routeLimit = process.env.CHINAHSR_OCEANBASE_ROUTE_LIMIT || '0';
   const includeAll = process.env.CHINAHSR_OCEANBASE_INCLUDE_ALL_CLASSES === '1';
   const directArgs = [path.join(ROOT, 'scripts', 'export_oceanbase_simulation_data.py'), '--stdout', '--route-limit', routeLimit];
-  const host = process.env.OB_HOST || '127.0.0.1';
-  if (!process.env.OB_PASSWORD && isLocalHost(host)) directArgs.push('--allow-empty-password');
   if (includeAll) directArgs.push('--include-all-classes');
 
   const orbArgs = ['-m', 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbExportCommand({ routeLimit, includeAll })];
@@ -184,7 +182,7 @@ function buildOrbExportCommand({ routeLimit, includeAll }) {
     `OB_USER=${shellQuote(process.env.CHINAHSR_ORB_OB_USER || 'root')}`,
     `OB_DATABASE=${shellQuote(process.env.CHINAHSR_ORB_OB_DATABASE || process.env.OB_DATABASE || 'chinahsr')}`,
     `OB_PASSWORD=${shellQuote(process.env.CHINAHSR_ORB_OB_PASSWORD || '')}`,
-    'python3 scripts/export_oceanbase_simulation_data.py --stdout --allow-empty-password',
+    'python3 scripts/export_oceanbase_simulation_data.py --stdout',
     `--route-limit ${shellQuote(routeLimit || '0')}`,
   ];
   if (includeAll) parts.push('--include-all-classes');
@@ -262,9 +260,7 @@ function runIngestProcess(filePath, count) {
 }
 
 function buildDirectIngestArgs(filePath) {
-  const args = [path.join(ROOT, 'scripts', 'oceanbase_booking_ingest.py'), '--input', filePath];
-  if (!process.env.OB_PASSWORD && isLocalHost(process.env.OB_HOST || '127.0.0.1')) args.push('--allow-empty-password');
-  return args;
+  return [path.join(ROOT, 'scripts', 'oceanbase_booking_ingest.py'), '--input', filePath];
 }
 
 function buildOrbIngestCommand(filePath) {
@@ -276,7 +272,7 @@ function buildOrbIngestCommand(filePath) {
     `OB_USER=${shellQuote(process.env.CHINAHSR_ORB_OB_USER || 'root')}`,
     `OB_DATABASE=${shellQuote(process.env.CHINAHSR_ORB_OB_DATABASE || process.env.OB_DATABASE || 'chinahsr')}`,
     `OB_PASSWORD=${shellQuote(process.env.CHINAHSR_ORB_OB_PASSWORD || '')}`,
-    'python3 scripts/oceanbase_booking_ingest.py --allow-empty-password --input',
+    'python3 scripts/oceanbase_booking_ingest.py --input',
     shellQuote(filePath),
   ].join(' ');
 }
