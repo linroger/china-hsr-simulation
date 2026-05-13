@@ -236,6 +236,15 @@ export class SeatInventory {
     return max;
   }
 
+  averageLoadFactor(seatClass = null) {
+    const capacity = seatClass ? this.capacityByClass.get(seatClass) || 0 : this.seats.length;
+    if (!capacity) return 0;
+    const loads = seatClass ? this.segmentLoadsByClass.get(seatClass) : this.segmentLoadsTotal;
+    if (!loads?.length) return 0;
+    const total = loads.reduce((sum, v) => sum + (v || 0), 0);
+    return total / (loads.length * capacity);
+  }
+
   seatTimeline(seatId) {
     const seat = this.seatById.get(seatId);
     if (!seat) return [];

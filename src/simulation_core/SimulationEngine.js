@@ -1175,7 +1175,11 @@ function groupSizeFromRandom(value) {
 
 function weightedTrainChoice(trains, value) {
   const weights = trains.map((train) => {
-    const load = train.inventory.occupancyForSegment(train.currentSegmentIndex || 0).loadFactor;
+    // For scheduled trains, use average load across all segments instead of
+    // segment 0 only, which can be misleading when bookings are distributed.
+    const load = train.status === 'scheduled'
+      ? train.inventory.averageLoadFactor()
+      : train.inventory.occupancyForSegment(train.currentSegmentIndex || 0).loadFactor;
     const departurePressure = train.departureMinute > 0 ? Math.max(0.2, Math.min(1.5, 1.1 - Math.abs(train.departureMinute - 540) / 900)) : 1;
     return Math.max(0.1, (train.frequencyRank || 0.3) + 0.2) * departurePressure * Math.max(0.15, 1 - load);
   });
