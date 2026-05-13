@@ -338,82 +338,137 @@ def main() -> int:
     if not args.skip_db:
         log(f"connecting to OceanBase at {os.environ.get('OB_HOST', '127.0.0.1')}:{os.environ.get('OB_PORT', '2881')}")
         conn = connect_oceanbase(read_db_config())
-        with conn.cursor() as cursor:
-            for statement in SCHEMA_SQL:
-                cursor.execute(statement)
-        conn.commit()
-        log(f"loading dimension tables: {len(stations):,} stations, {len(routes):,} routes")
-        load_static_dimension_tables(conn, stations, routes, args.batch_size)
-        with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM daily_route_services WHERE run_id = %s", (run_id,))
-            cursor.execute("DELETE FROM route_geometry WHERE route_id IN (SELECT route_id FROM routes)")
-            cursor.execute("DELETE FROM route_variants WHERE route_id IN (SELECT route_id FROM routes)")
-            cursor.execute("DELETE FROM route_variant_stops WHERE route_id IN (SELECT route_id FROM routes)")
-            cursor.execute("DELETE FROM route_variant_segments WHERE route_id IN (SELECT route_id FROM routes)")
-            cursor.execute("DELETE FROM route_variant_geometry WHERE route_id IN (SELECT route_id FROM routes)")
-        conn.commit()
-        load_route_geometry(conn, routes, args.batch_size)
-        load_route_variants(conn, routes, args.batch_size)
-        if rail_features:
-            load_rail_tracks(conn, rail_features, args.batch_size)
+        try:
+            with conn.cursor() as cursor:
+                for statement in SCHEMA_SQL:
+                    cursor.execute(statement)
+            conn.commit()
+            log(f"loading dimension tables: {len(stations):,} stations, {len(routes):,} routes")
+            load_static_dimension_tables(conn, stations, routes, args.batch_size)
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM daily_route_services WHERE run_id = %s", (run_id,))
+                cursor.execute("DELETE FROM route_geometry WHERE route_id IN (SELECT route_id FROM routes)")
+                cursor.execute("DELETE FROM route_variants WHERE route_id IN (SELECT route_id FROM routes)")
+                cursor.execute("DELETE FROM route_variant_stops WHERE route_id IN (SELECT route_id FROM routes)")
+                cursor.execute("DELETE FROM route_variant_segments WHERE route_id IN (SELECT route_id FROM routes)")
+                cursor.execute("DELETE FROM route_variant_geometry WHERE route_id IN (SELECT route_id FROM routes)")
+            conn.commit()
+            load_route_geometry(conn, routes, args.batch_size)
+            load_route_variants(conn, routes, args.batch_size)
+            if rail_features:
+                load_rail_tracks(conn, rail_features, args.batch_size)
 
-    totals = generate_and_optionally_insert_daily_rows(
-        run_id=run_id,
-        routes=routes,
-        start_date=start_date,
-        days=args.days,
-        workers=args.workers,
-        chunk_days=args.chunk_days,
-        batch_size=args.batch_size,
-        conn=conn,
-    )
-    generated_seconds = round(time.perf_counter() - start, 3)
+            totals = generate_and_optionally_insert_daily_rows(
+                run_id=run_id,
+                routes=routes,
+                start_date=start_date,
+                days=args.days,
+                workers=args.workers,
+                chunk_days=args.chunk_days,
+                batch_size=args.batch_size,
+                conn=conn,
+            )
+            generated_seconds = round(time.perf_counter() - start, 3)
 
-    end_date = start_date + timedelta(days=args.days - 1)
-    summary = {
-        "schemaVersion": 1,
-        "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "runId": run_id,
-        "source": "OceanBase annual route-day aggregate simulation",
-        "database": "chinahsr" if not args.skip_db else "skipped",
-        "startDate": start_date.isoformat(),
-        "endDate": end_date.isoformat(),
-        "days": args.days,
-        "stationCount": len(stations),
-        "routeCount": len(routes),
-        "routeContract": build_route_contract_summary(routes, rail_features),
-        "routeDayRows": totals["route_day_rows"],
-        "totalTrainServices": totals["total_train_services"],
-        "estimatedPassengers": totals["estimated_passengers"],
-        "estimatedRevenue": round(totals["estimated_revenue"], 2),
-        "surgeDayCount": totals["surge_day_count"],
-        "workerCount": args.workers,
-        "cpuCount": os.cpu_count() or 1,
-        "chunkDays": args.chunk_days,
-        "generatedSeconds": generated_seconds,
-        "dailyAverages": {
-            "trainServices": round(totals["total_train_services"] / args.days, 1),
-            "passengers": round(totals["estimated_passengers"] / args.days, 1),
-            "revenue": round(totals["estimated_revenue"] / args.days, 2),
-        },
-        "calendar": build_calendar_summary(start_date, args.days),
-        "oceanbase": {
-            "enabled": not args.skip_db,
-            "tables": {},
-        },
-        "architecture": {
-            "browserDetailedMode": "rolling-day seat-level Web Worker",
-            "yearlyPersistenceMode": "OceanBase route-day aggregate facts",
-            "routeContractMode": "OceanBase route variants + ordered stops + per-segment geometry",
-            "rendering": "Mapbox WebGL",
-            "computeParallelism": "Python multiprocessing for annual generation; browser Web Worker for live day",
-        },
-    }
+            end_date = start_date + timedelta(days=args.days - 1)
+            summary = {
+                "schemaVersion": 1,
+                "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "runId": run_id,
+                "source": "OceanBase annual route-day aggregate simulation",
+                "database": "chinahsr" if not args.skip_db else "skipped",
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "days": args.days,
+                "stationCount": len(stations),
+                "routeCount": len(routes),
+                "routeContract": build_route_contract_summary(routes, rail_features),
+                "routeDayRows": totals["route_day_rows"],
+                "totalTrainServices": totals["total_train_services"],
+                "estimatedPassengers": totals["estimated_passengers"],
+                "estimatedRevenue": round(totals["estimated_revenue"], 2),
+                "surgeDayCount": totals["surge_day_count"],
+                "workerCount": args.workers,
+                "cpuCount": os.cpu_count() or 1,
+                "chunkDays": args.chunk_days,
+                "generatedSeconds": generated_seconds,
+                "dailyAverages": {
+                    "trainServices": round(totals["total_train_services"] / args.days, 1),
+                    "passengers": round(totals["estimated_passengers"] / args.days, 1),
+                    "revenue": round(totals["estimated_revenue"] / args.days, 2),
+                },
+                "calendar": build_calendar_summary(start_date, args.days),
+                "oceanbase": {
+                    "enabled": not args.skip_db,
+                    "tables": {},
+                },
+                "architecture": {
+                    "browserDetailedMode": "rolling-day seat-level Web Worker",
+                    "yearlyPersistenceMode": "OceanBase route-day aggregate facts",
+                    "routeContractMode": "OceanBase route variants + ordered stops + per-segment geometry",
+                    "rendering": "Mapbox WebGL",
+                    "computeParallelism": "Python multiprocessing for annual generation; browser Web Worker for live day",
+                },
+            }
 
-    if conn is not None:
-        upsert_simulation_run(conn, summary, str(summary_path))
-        summary["oceanbase"]["tables"] = query_table_counts(conn, run_id)
-        conn.close()
+            upsert_simulation_run(conn, summary, str(summary_path))
+            summary["oceanbase"]["tables"] = query_table_counts(conn, run_id)
+        finally:
+            if conn is not None:
+                conn.close()
+    else:
+        totals = generate_and_optionally_insert_daily_rows(
+            run_id=run_id,
+            routes=routes,
+            start_date=start_date,
+            days=args.days,
+            workers=args.workers,
+            chunk_days=args.chunk_days,
+            batch_size=args.batch_size,
+            conn=None,
+        )
+        generated_seconds = round(time.perf_counter() - start, 3)
+
+        end_date = start_date + timedelta(days=args.days - 1)
+        summary = {
+            "schemaVersion": 1,
+            "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "runId": run_id,
+            "source": "OceanBase annual route-day aggregate simulation",
+            "database": "chinahsr" if not args.skip_db else "skipped",
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+            "days": args.days,
+            "stationCount": len(stations),
+            "routeCount": len(routes),
+            "routeContract": build_route_contract_summary(routes, rail_features),
+            "routeDayRows": totals["route_day_rows"],
+            "totalTrainServices": totals["total_train_services"],
+            "estimatedPassengers": totals["estimated_passengers"],
+            "estimatedRevenue": round(totals["estimated_revenue"], 2),
+            "surgeDayCount": totals["surge_day_count"],
+            "workerCount": args.workers,
+            "cpuCount": os.cpu_count() or 1,
+            "chunkDays": args.chunk_days,
+            "generatedSeconds": generated_seconds,
+            "dailyAverages": {
+                "trainServices": round(totals["total_train_services"] / args.days, 1),
+                "passengers": round(totals["estimated_passengers"] / args.days, 1),
+                "revenue": round(totals["estimated_revenue"] / args.days, 2),
+            },
+            "calendar": build_calendar_summary(start_date, args.days),
+            "oceanbase": {
+                "enabled": not args.skip_db,
+                "tables": {},
+            },
+            "architecture": {
+                "browserDetailedMode": "rolling-day seat-level Web Worker",
+                "yearlyPersistenceMode": "OceanBase route-day aggregate facts",
+                "routeContractMode": "OceanBase route variants + ordered stops + per-segment geometry",
+                "rendering": "Mapbox WebGL",
+                "computeParallelism": "Python multiprocessing for annual generation; browser Web Worker for live day",
+            },
+        }
 
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
