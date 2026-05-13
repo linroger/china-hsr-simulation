@@ -213,3 +213,18 @@ Next steps:
 1. Consider GPU-driven train animation (Mapbox custom layer) for smoother map rendering.
 2. Consider background pre-scheduling of next-day trains to further reduce day-boundary latency.
 3. Monitor real-world snapshot sizes with delta enabled.
+
+2026-05-14T06:00:00Z | branch: main
+Feature/bug worked on: Final audit fix pass + delta snapshot robustness.
+Files touched: src/simulation_core/simulationWorker.js, src/algorithms/seatInventory.js, src/simulation_core/SimulationEngine.js, scripts/prepare-data.cjs.
+Summary:
+- Fix SI-3: Remove redundant validateInterval from isSeatAvailable hot path.
+- Fix SE-1: Self-correcting loop interval — schedule next frame based on actual processing time instead of fixed 50ms, preventing callback pile-up.
+- Fix DP-9: buildRailGeojson uses curvature-aware capVertexCount instead of uniform stride simplification.
+- Fix delta snapshot consistency: manual snapshot requests now sync lastPublishedTrains so subsequent tick deltas remain consistent.
+Tests run: `npm test` (25/25 passing); `npm run build` (passing).
+Result: Passing. All known audit items addressed. Delta snapshots working end-to-end.
+Remaining complex items for future sessions:
+1. GPU-driven train animation (Mapbox custom layer / deck.gl)
+2. Binary snapshot format (flat buffers / transferable ArrayBuffer)
+3. Background pre-scheduling of next-day trains to further smooth day boundaries
