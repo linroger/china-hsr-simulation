@@ -22,10 +22,20 @@ echo "[init] building production bundle..."
 npm run build
 
 echo "[init] scanning for Mapbox secret tokens..."
-if rg "sk\\.ey" . >/tmp/china_hsr_secret_scan.txt; then
-  cat /tmp/china_hsr_secret_scan.txt
-  echo "[init] ERROR: secret-looking Mapbox token found in project files." >&2
-  exit 1
+if command -v rg >/dev/null 2>&1; then
+  if rg "sk\\.ey" . >/tmp/china_hsr_secret_scan.txt; then
+    cat /tmp/china_hsr_secret_scan.txt
+    echo "[init] ERROR: secret-looking Mapbox token found in project files." >&2
+    exit 1
+  fi
+elif command -v grep >/dev/null 2>&1; then
+  if grep -r "sk\\.ey" . >/tmp/china_hsr_secret_scan.txt 2>/dev/null; then
+    cat /tmp/china_hsr_secret_scan.txt
+    echo "[init] ERROR: secret-looking Mapbox token found in project files." >&2
+    exit 1
+  fi
+else
+  echo "[init] warning: neither ripgrep nor grep available; skipping secret token scan."
 fi
 
 echo "[init] complete. Start the stable local app server with: npm run serve"
