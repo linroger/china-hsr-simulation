@@ -103,7 +103,6 @@ function startBackgroundPreload() {
   const runChunk = () => {
     if (!engine) return;
     const result = engine.preloadDemandBatch(120);
-    if (result.processed) postSnapshot('preload');
     if (result.done) {
       engine.logEvent('demand', `Background demand preload complete: ${engine.stats.totalPassengers.toLocaleString()} passengers booked.`);
       postSnapshot('preload-complete');
