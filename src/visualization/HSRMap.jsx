@@ -193,19 +193,26 @@ export default function HSRMap({ trains, events }) {
     // the updated targetTrainsRef without restarting from the current position.
   }, [ready, trains]);
 
-  if (error === 'missing-token') {
+  if (error) {
+    const isMissingToken = error === 'missing-token';
     return (
       <div className="map-pane map-pane-fallback">
         <div className="map-token-warning">
-          <h2>Mapbox token not configured</h2>
-          <p>The map view needs a public Mapbox token to render. Configure it before building:</p>
-          <pre>cp .env.example .env
+          <h2>{isMissingToken ? 'Mapbox token not configured' : 'Map view unavailable'}</h2>
+          {isMissingToken ? (
+            <>
+              <p>The map view needs a public Mapbox token to render. Configure it before building:</p>
+              <pre>cp .env.example .env
 # then edit .env and set:
 VITE_MAPBOX_TOKEN=pk.your_public_mapbox_token
 VITE_MAPBOX_STYLE=mapbox://styles/mapbox/dark-v11
 npm run build && npm run serve</pre>
-          <p>The Dashboard and Booking views still work without Mapbox — try those tabs while the token is being set up. <strong>{(trains || []).length} trains</strong> are running in the simulation right now.</p>
-          <p>Get a free public token at <a href="https://account.mapbox.com/access-tokens/" target="_blank" rel="noreferrer">account.mapbox.com</a>.</p>
+              <p>Get a free public token at <a href="https://account.mapbox.com/access-tokens/" target="_blank" rel="noreferrer">account.mapbox.com</a>.</p>
+            </>
+          ) : (
+            <p>The map could not load: {error}</p>
+          )}
+          <p>The Dashboard and Booking views still work without the map — try those tabs. <strong>{(trains || []).length} trains</strong> are running in the simulation right now.</p>
         </div>
         <div className="map-events">
           <b>Recent events</b>
@@ -218,7 +225,6 @@ npm run build && npm run serve</pre>
   return (
     <div className="map-pane">
       <div ref={containerRef} className="mapbox-container" />
-      {error && error !== 'missing-token' && <div className="map-error">{error}</div>}
       <div className="map-legend">
         <b>Live algorithm map</b>
         <span><i className="rail" /> OSM rail layer</span>
