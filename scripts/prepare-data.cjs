@@ -720,10 +720,11 @@ function buildRailNetwork(osmFeatures) {
     const key = nodeKey(lng, lat);
     const existing = cellMap.get(key);
     if (existing !== undefined) {
-      const node = nodes[existing];
-      node.lng = (node.lng * node.refCount + lng) / (node.refCount + 1);
-      node.lat = (node.lat * node.refCount + lat) / (node.refCount + 1);
-      node.refCount += 1;
+      // Keep the first coordinate that fell in this cell rather than
+      // averaging. Averaging can drift hundreds of meters from any actual
+      // rail line when many vertices from nearby parallel tracks snap to
+      // the same ~600 m cell.
+      nodes[existing].refCount += 1;
       return existing;
     }
     const id = nodes.length;
