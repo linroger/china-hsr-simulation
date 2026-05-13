@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Gauge, Map, ReceiptText, TrainFront } from 'lucide-react';
 import { SimulationWorkerClient } from './simulation_core/SimulationWorkerClient.js';
 import HSRMap from './visualization/HSRMap.jsx';
-import Dashboard from './visualization/Dashboard.jsx';
-import BookingPanel from './visualization/BookingPanel.jsx';
+const Dashboard = lazy(() => import('./visualization/Dashboard.jsx'));
+const BookingPanel = lazy(() => import('./visualization/BookingPanel.jsx'));
 
 export default function App() {
   const workerRef = useRef(null);
@@ -122,8 +122,16 @@ export default function App() {
 
       <section className="workspace">
         {activeView === 'map' && <HSRMap trains={snapshot.trains} events={snapshot.events} />}
-        {activeView === 'dashboard' && <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} yearlySummary={yearlySummary} />}
-        {activeView === 'booking' && <BookingPanel snapshot={snapshot} quoteTrip={quoteTrip} bookTrip={bookTrip} />}
+        {activeView === 'dashboard' && (
+          <Suspense fallback={<LoadingScreen message="Loading dashboard..." />}>
+            <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} yearlySummary={yearlySummary} />
+          </Suspense>
+        )}
+        {activeView === 'booking' && (
+          <Suspense fallback={<LoadingScreen message="Loading booking panel..." />}>
+            <BookingPanel snapshot={snapshot} quoteTrip={quoteTrip} bookTrip={bookTrip} />
+          </Suspense>
+        )}
       </section>
     </main>
   );
