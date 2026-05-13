@@ -168,3 +168,30 @@ Next steps:
 1. Review remaining audit items: DP-2 (rail node averaging drift), DP-8 (capVertexCount curvature preservation), SI-1 (group car contiguity), FE-12 (Mapbox token-free fallback).
 2. Consider adding integration tests for day-boundary booking retention.
 3. Evaluate if the increased repaired-jump count (4654) from DP-5 needs further geometry pipeline tuning.
+
+2026-05-14T01:30:00Z | branch: main
+Feature/bug worked on: PERFORMANCE_AUDIT.md optimization sweep — 8 commits reducing snapshot serialization cost and bundle size.
+Files touched: src/simulation_core/SimulationEngine.js, src/simulation_core/simulationWorker.js, src/algorithms/seatInventory.js, src/App.jsx, src/visualization/Dashboard.jsx, src/visualization/BookingPanel.jsx.
+Summary:
+- Exclude booking options from preload snapshots (saves ~9MB × ~50 batches during init).
+- Filter candidates before serialize — only running + scheduled within 120min + completed, not all 6000 trains.
+- Cache booking options by routeId with minimal {name, index} stops; exclude completed trains from bookingOptions.
+- Single-pass candidate filtering eliminates 6000-object intermediate array.
+- Single-pass stats computation eliminates 4 intermediate array allocations (averageDelayMinutes, delayedTrains, activeAverageDelayMinutes, activeDelayedTrains).
+- serializeTrain stops: { ...stop, index } → { name, index } (9 properties → 2).
+- Remove unused classLoads/occupancy from serializeTrain (saves 3-4 occupancyForSegment calls per train).
+- Remove 12 unused properties from serializeTrain (type, originalOrigin, originalDestination, originProvince, destinationProvince, legIndex, journeyProgress, progress, departureMinute, delayMinutes, currentDelayMinutes, minutesToDeparture, turnaroundDepartureMinute).
+- Cache serialized stops array per train (_serializedStops), invalidated on turnaround.
+- Cache calendar object by floor(nowMinutes) — Date and toLocaleString only when minute changes.
+- Cache bookings and events arrays by reference equality — reuse when no new entries added.
+- Skip snapshot creation in loop() when onUpdate is null (was creating full snapshot every tick via optional-chaining arg eval).
+- Eliminate intermediate preload snapshots — only send preload-complete, saving ~49 full serializations during init.
+- Halve preload batch size 120→60 for smoother worker message processing.
+- Add occupiedOnSegment() to SeatInventory to avoid {occupied, capacity, loadFactor} object allocation in network summary (6000 objects per snapshot).
+- Lazy-load Dashboard (373 KB) and BookingPanel (6 KB) with React.lazy + Suspense — main bundle drops from 2330 KB to 1942 KB.
+Tests run: `npm test` (25/25 passing); `npm run build` (passing, code-split chunks emitted); `./init.sh` (complete).
+Result: Passing. Estimated snapshot object churn reduced from ~64,000 to ~20,000 objects per snapshot. Main bundle 388 KB smaller.
+Next steps:
+1. Delta snapshots — only send changed train fields instead of full 1500-train array (biggest remaining win, 4-6 hr effort).
+2. Background day scheduling — pre-build next day's trains to eliminate ~7s freeze at midnight.
+3. Remaining audit items: DP-2 (rail node averaging), DP-8 (capVertexCount curvature), SI-1 (group car contiguity), FE-12 (Mapbox token-free fallback).
