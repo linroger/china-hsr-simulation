@@ -1073,7 +1073,9 @@ function sampleSpaced(candidates, directKm) {
  */
 function repairBigJumps(coordinates) {
   if (coordinates.length < 2) return { coordinates, repaired: false };
-  const maxJumpDeg = 0.45;
+  // Lowered from 0.45° (~50 km) to 0.15° (~17 km) to flag smaller jumps
+  // that may indicate geometry artifacts rather than legitimate long segments.
+  const maxJumpDeg = 0.15;
   const cleaned = [coordinates[0]];
   let repaired = false;
   for (let i = 1; i < coordinates.length; i += 1) {
