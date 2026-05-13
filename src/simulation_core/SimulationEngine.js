@@ -1138,7 +1138,8 @@ function average(values) {
 function distanceBetween(train, originIndex, destinationIndex) {
   let total = 0;
   for (let index = originIndex; index < destinationIndex; index += 1) {
-    total += train.segments[index]?.distanceKm || haversineKm(train.stops[index], train.stops[index + 1]);
+    // Use ?? so distanceKm = 0 is preserved; only null/undefined falls back to haversine.
+    total += train.segments[index]?.distanceKm ?? haversineKm(train.stops[index], train.stops[index + 1]);
   }
   return total;
 }
