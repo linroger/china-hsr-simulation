@@ -51,8 +51,16 @@ const server = http.createServer((request, response) => {
   }
 
   const safePath = pathname.replace(/^\/+/, '');
-  const requested = path.resolve(DIST, safePath);
-  const filePath = requested.startsWith(DIST) && fs.existsSync(requested) && fs.statSync(requested).isFile()
+  const normalized = path.normalize(safePath);
+  // Reject any path containing parent-directory traversal.
+  if (normalized.includes('..')) {
+    response.statusCode = 403;
+    response.end('Forbidden');
+    return;
+  }
+  const requested = path.resolve(DIST, normalized);
+  const withinDist = !path.relative(DIST, requested).startsWith('..') && requested !== DIST;
+  const filePath = withinDist && fs.existsSync(requested) && fs.statSync(requested).isFile()
     ? requested
     : path.join(DIST, 'index.html');
 
