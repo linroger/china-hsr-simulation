@@ -645,20 +645,20 @@ export class SimulationEngine {
   snapshot({ includeBookingOptions = true } = {}) {
     const calendar = calendarState(this.nowMinutes);
 
-    // Compute lightweight candidate objects for filtering (no geo interpolation)
-    const candidates = this.trains.map((train) => ({
-      raw: train,
-      status: train.status,
-      minutesToDeparture: Math.round(train.departureMinute - this.nowMinutes),
-      stopsLength: train.stops.length,
-      currentSegmentIndex: train.currentSegmentIndex,
-      segmentProgress: train.segmentProgress,
-      loadFactor: train.inventory.occupancyForSegment(Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1))).loadFactor,
-    }));
-
-    const active = candidates.filter((c) => c.status === 'running');
-    const scheduled = candidates.filter((c) => c.status === 'scheduled' && c.minutesToDeparture <= 120);
-    const completed = candidates.filter((c) => c.status === 'completed');
+    // Build candidate lists in a single pass to avoid intermediate arrays.
+    const active = [];
+    const scheduled = [];
+    const completed = [];
+    for (const train of this.trains) {
+      const status = train.status;
+      if (status === 'running') {
+        active.push({ raw: train, status, stopsLength: train.stops.length, currentSegmentIndex: train.currentSegmentIndex, segmentProgress: train.segmentProgress });
+      } else if (status === 'scheduled' && Math.round(train.departureMinute - this.nowMinutes) <= 120) {
+        scheduled.push({ raw: train, status, minutesToDeparture: Math.round(train.departureMinute - this.nowMinutes), stopsLength: train.stops.length, currentSegmentIndex: train.currentSegmentIndex, segmentProgress: train.segmentProgress });
+      } else if (status === 'completed') {
+        completed.push({ raw: train, status, stopsLength: train.stops.length, currentSegmentIndex: train.currentSegmentIndex, segmentProgress: train.segmentProgress });
+      }
+    }
 
     const visibleCandidates = selectVisibleCandidates(active, scheduled, completed, SNAPSHOT_TRAIN_LIMIT);
     const visibleTrains = visibleCandidates.map((c) => serializeTrain(c.raw, this.nowMinutes));
@@ -690,10 +690,34 @@ export class SimulationEngine {
         scheduledTrains: scheduled.length,
         completedTrains: completed.length,
         visibleTrainCount: visibleTrains.length,
-        averageDelayMinutes: average(this.trains.map((train) => train.delayMinutes || 0)),
-        delayedTrains: this.trains.filter((train) => (train.delayMinutes || 0) >= 5).length,
-        activeAverageDelayMinutes: average(this.trains.filter((train) => train.status === 'running').map((train) => currentDelay(train))),
-        activeDelayedTrains: this.trains.filter((train) => train.status === 'running' && currentDelay(train) >= 3).length,
+        averageDelayMinutes: (() => {
+          let sum = 0;
+          for (const train of this.trains) sum += train.delayMinutes || 0;
+          return this.trains.length ? Math.round((sum / this.trains.length) * 10) / 10 : 0;
+        })(),
+        delayedTrains: (() => {
+          let count = 0;
+          for (const train of this.trains) if ((train.delayMinutes || 0) >= 5) count += 1;
+          return count;
+        })(),
+        activeAverageDelayMinutes: (() => {
+          let sum = 0;
+          let count = 0;
+          for (const train of this.trains) {
+            if (train.status === 'running') {
+              sum += currentDelay(train);
+              count += 1;
+            }
+          }
+          return count ? Math.round((sum / count) * 10) / 10 : 0;
+        })(),
+        activeDelayedTrains: (() => {
+          let count = 0;
+          for (const train of this.trains) {
+            if (train.status === 'running' && currentDelay(train) >= 3) count += 1;
+          }
+          return count;
+        })(),
       },
       bookings: this.bookings.slice(-12).reverse(),
       events: this.events,
@@ -709,35 +733,42 @@ export class SimulationEngine {
 
   createBookingOptions() {
     if (!this._routeBookingOptions) this._routeBookingOptions = new Map();
-    return this.trains.map((train) => {
-      let base = this._routeBookingOptions.get(train.routeId);
-      if (!base) {
-        base = {
-          routeId: train.routeId,
-          code: train.code,
-          origin: train.origin,
-          destination: train.destination,
-          corridor: train.corridor,
-          originProvince: train.originProvince,
-          destinationProvince: train.destinationProvince,
-          stops: train.stops.map((stop, index) => ({ ...stop, index })),
-          totalDistanceKm: train.totalDistanceKm,
-          seatQuota: TRAIN_SEAT_QUOTA,
+    // Exclude completed trains — they are not bookable and their options
+    // waste snapshot space. Trains that have already departed but are still
+    // running may still be needed for boarding-state display.
+    return this.trains
+      .filter((train) => !train.completed)
+      .map((train) => {
+        let base = this._routeBookingOptions.get(train.routeId);
+        if (!base) {
+          base = {
+            routeId: train.routeId,
+            code: train.code,
+            origin: train.origin,
+            destination: train.destination,
+            corridor: train.corridor,
+            originProvince: train.originProvince,
+            destinationProvince: train.destinationProvince,
+            // Send only stop names to reduce snapshot size; the frontend only
+            // needs names for the booking panel dropdowns.
+            stops: train.stops.map((stop, index) => ({ name: stop.name, index })),
+            totalDistanceKm: train.totalDistanceKm,
+            seatQuota: TRAIN_SEAT_QUOTA,
+          };
+          this._routeBookingOptions.set(train.routeId, base);
+        }
+        return {
+          ...base,
+          id: train.id,
+          direction: train.direction,
+          routeVariantId: train.routeVariantId,
+          departureMinute: train.departureMinute,
+          departureClock: formatClock(train.departureMinute),
+          serviceDate: train.calendar?.dateLabel,
+          servicesForRoute: train.servicesForRoute,
+          serviceIndexForRoute: train.serviceIndexForRoute,
         };
-        this._routeBookingOptions.set(train.routeId, base);
-      }
-      return {
-        ...base,
-        id: train.id,
-        direction: train.direction,
-        routeVariantId: train.routeVariantId,
-        departureMinute: train.departureMinute,
-        departureClock: formatClock(train.departureMinute),
-        serviceDate: train.calendar?.dateLabel,
-        servicesForRoute: train.servicesForRoute,
-        serviceIndexForRoute: train.serviceIndexForRoute,
-      };
-    });
+      });
   }
 }
 
@@ -1101,7 +1132,7 @@ function serializeTrain(train, nowMinutes) {
     capacity: activeLoad.capacity,
     occupancy: Object.fromEntries(Object.entries(classLoads).map(([key, value]) => [key, value.occupied])),
     classLoads,
-    stops: train.stops.map((stop, index) => ({ ...stop, index })),
+    stops: train.stops.map((stop, index) => ({ name: stop.name, index })),
     totalDistanceKm: train.totalDistanceKm,
     departureMinute: train.departureMinute,
     delayMinutes: train.delayMinutes,
