@@ -1138,7 +1138,7 @@ function serializeTrain(train, nowMinutes) {
     loadFactor: activeLoad.loadFactor,
     passengerCount: activeLoad.occupied,
     capacity: activeLoad.capacity,
-    stops: train.stops.map((stop, index) => ({ name: stop.name, index })),
+    stops: train._serializedStops || (train._serializedStops = train.stops.map((stop, index) => ({ name: stop.name, index }))),
     totalDistanceKm: train.totalDistanceKm,
   };
 }
