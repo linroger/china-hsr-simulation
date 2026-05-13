@@ -195,3 +195,21 @@ Next steps:
 1. Delta snapshots — only send changed train fields instead of full 1500-train array (biggest remaining win, 4-6 hr effort).
 2. Background day scheduling — pre-build next day's trains to eliminate ~7s freeze at midnight.
 3. Remaining audit items: DP-2 (rail node averaging), DP-8 (capVertexCount curvature), SI-1 (group car contiguity), FE-12 (Mapbox token-free fallback).
+
+2026-05-14T05:00:00Z | branch: main
+Feature/bug worked on: Remaining audit fixes + delta snapshots.
+Files touched: src/algorithms/seatInventory.js, scripts/prepare-data.cjs, src/visualization/HSRMap.jsx, src/simulation_core/simulationWorker.js, src/App.jsx, src/simulation_core/SimulationEngine.js.
+Summary:
+- Fix SI-1: findAllocationGroup now keeps large groups in complete rows within the same car instead of scattering across cars.
+- Fix DP-8: capVertexCount uses curvature-aware selection (angle deviation + perpendicular deviation from chord) to preserve sharp turns and junctions.
+- Fix DP-2: buildRailNetwork no longer averages node coordinates in cells; keeps first coordinate to prevent drift from actual rail lines.
+- Fix FE-12: HSRMap fallback view shown for ANY fatal map error, not just missing tokens.
+- PERFORMANCE: Remove synchronous preloadDemand() from advanceServiceDay — eliminates the ~7s day-boundary freeze. Background chunked preload starts within 150ms.
+- PERFORMANCE: Delta snapshots — worker only sends trains whose dynamic state changed. Frontend mergeSnapshot merges deltas into previous train state. Full snapshots on init/booking/manual/day-boundary. Estimated ~50% snapshot size reduction.
+- PERFORMANCE: _serializedStops cache now applied in serializeTrain too (was only in createBookingOptions).
+Tests run: `npm test` (25/25 passing); `npm run build` (passing with code-split chunks); `./init.sh` (complete).
+Result: Passing. All 4 remaining audit items fixed. Delta snapshots implemented.
+Next steps:
+1. Consider GPU-driven train animation (Mapbox custom layer) for smoother map rendering.
+2. Consider background pre-scheduling of next-day trains to further reduce day-boundary latency.
+3. Monitor real-world snapshot sizes with delta enabled.
