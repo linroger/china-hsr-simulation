@@ -198,12 +198,16 @@ export class SimulationEngine {
 
   loop() {
     if (!this.running) return;
-    const nowMs = performance.now();
-    const elapsedSec = this.lastTickMs ? Math.min(0.5, (nowMs - this.lastTickMs) / 1000) : 0.1;
-    this.lastTickMs = nowMs;
+    const frameStartMs = performance.now();
+    const elapsedSec = this.lastTickMs ? Math.min(0.5, (frameStartMs - this.lastTickMs) / 1000) : 0.1;
+    this.lastTickMs = frameStartMs;
     this.tick(elapsedSec);
     if (this.callbacks.onUpdate) this.callbacks.onUpdate(this.snapshot());
-    this.timer = setTimeout(() => this.loop(), 1000 / 20);
+    // Schedule the next frame to maintain ~20 Hz without piling up
+    // callbacks when tick() + snapshot() exceed 50 ms.
+    const processingMs = performance.now() - frameStartMs;
+    const intervalMs = Math.max(1, Math.round(1000 / 20 - processingMs));
+    this.timer = setTimeout(() => this.loop(), intervalMs);
   }
 
   tick(realSeconds = 1) {
