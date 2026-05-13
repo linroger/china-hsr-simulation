@@ -1023,7 +1023,9 @@ function sampleRailCorridor(from, to, directKm) {
         const projection = project(from, to, node);
         if (projection < -0.05 || projection > 1.05) continue;
         const perp = perpendicularDistanceKm(from, to, node);
-        if (perp > Math.max(28, Math.min(110, directKm * 0.32))) continue;
+        // Tightened from max(28, min(110, directKm*0.32)) to max(20, min(70, directKm*0.22))
+        // so a 1000km route allows 70km perpendicular instead of 110km.
+        if (perp > Math.max(20, Math.min(70, directKm * 0.22))) continue;
         candidates.push({ lng: node.lng, lat: node.lat, projection, perpendicularKm: perp });
       }
     }
