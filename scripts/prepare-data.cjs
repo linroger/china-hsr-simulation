@@ -504,7 +504,9 @@ function pickIntermediateStops(origin, destination, totalKm, stopTarget, referen
   // Keep only stations within the corridor band along the chord direction.
   .filter((item) => item.projection > 0.04 && item.projection < 0.96)
   // Allow up to 90 km off the rail-traced path, or 1.5x the chord-corridor — whichever is wider.
-  .filter((item) => item.railDeviation < Math.max(90, corridorWidth * 1.5));
+  // Tightened from max(90, corridorWidth * 1.5) to max(60, corridorWidth * 1.2)
+  // so a 1000km route allows ~168km deviation instead of ~210km.
+  .filter((item) => item.railDeviation < Math.max(60, corridorWidth * 1.2));
 
   // Phase 1: pick national/regional hubs near the rail path. Hubs are the
   // backbone of HSR routes (北京南/天津南/济南西/南京南/苏州北/上海虹桥, etc.).
@@ -849,7 +851,9 @@ function traceOverRailGraph(from, to, directKm) {
   if (!path || path.nodes.length < 2) return null;
 
   const pathDistanceKm = path.distanceKm;
-  if (pathDistanceKm > directKm * 1.85 + 12) return null;
+  // Relaxed from directKm * 1.85 + 12 to directKm * 2.2 + 20 to accommodate
+  // mountainous rail paths that legitimately exceed 1.85× the straight-line distance.
+  if (pathDistanceKm > directKm * 2.2 + 20) return null;
 
   const coords = [[from.lng, from.lat]];
   for (const nodeId of path.nodes) {
