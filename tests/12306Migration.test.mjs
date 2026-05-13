@@ -196,3 +196,40 @@ test('12306 OceanBase migration dry-run emits review manifest and queryable rout
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('12306 simulation export preserves ordered stops and return route contract', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chinahsr-12306-export-'));
+  const dbPath = path.join(tempDir, 'fixture.db');
+  try {
+    createFixtureDatabase(dbPath);
+    const output = execFileSync('python3', [
+      'scripts/export_oceanbase_simulation_data.py',
+      '--sqlite',
+      dbPath,
+      '--stdout',
+    ], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    const payload = JSON.parse(output);
+    assert.equal(payload.metadata.routeCount, 1);
+    assert.equal(payload.metadata.stationCount, 3);
+    assert.equal(payload.routes.length, 1);
+
+    const route = payload.routes[0];
+    assert.equal(route.code, 'G1');
+    assert.deepEqual(route.stops.map((stop) => stop.name), ['Alpha', 'Beta', 'Gamma']);
+    assert.deepEqual(route.routeContract.stopSequence, ['Alpha', 'Beta', 'Gamma']);
+    assert.deepEqual(route.routeContract.returnStopSequence, ['Gamma', 'Beta', 'Alpha']);
+    assert.equal(route.routeContract.outboundVariantId, `${route.id}:outbound`);
+    assert.equal(route.routeContract.returnVariantId, `${route.id}:return`);
+    assert.equal(route.segments.length, 2);
+    assert.equal(route.segments[0].from, 'Alpha');
+    assert.equal(route.segments[0].to, 'Beta');
+    assert.deepEqual(route.segments[0].geometry[0], [116, 39]);
+    assert.deepEqual(route.segments[1].geometry.at(-1), [117, 40]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

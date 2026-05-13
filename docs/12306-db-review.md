@@ -129,6 +129,33 @@ npm run 12306:migrate -- \
   --truncate
 ```
 
+Local OceanBase Desktop on this Mac runs inside the `oceanbase-desktop` OrbStack VM, not on the host loopback interface. The verified local load command is:
+
+```bash
+orb -m oceanbase-desktop -u root bash -lc '
+  cd /Users/rogerlin/Downloads/chinashsr/ChinaHSR_Simulation &&
+  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
+    python3 scripts/migrate_12306_to_oceanbase.py \
+      --load --allow-empty-password \
+      --sqlite /Users/rogerlin/Downloads/chinashsr/12306.db \
+      --create-database --truncate
+'
+```
+
+The live load completed with the expected row counts: 3,365 stations, 388 train routes, 4,760 route stops, 331 ticket rows, 1,271 price rows, 226,613 rail tracks, 3,345 station locations, and 15,865 station-track links.
+
+After loading, export the simulation-facing route contract JSON:
+
+```bash
+orb -m oceanbase-desktop -u root bash -lc '
+  cd /Users/rogerlin/Downloads/chinashsr/ChinaHSR_Simulation &&
+  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
+    python3 scripts/export_oceanbase_simulation_data.py --allow-empty-password
+'
+```
+
+The current export contains 222 high-speed/EMU routes and 481 stations, preserving every route as an ordered `routeContract` with the return sequence stored in exact reverse order. The export now also builds an OceanBase rail graph from `cr_12306_railway_tracks` and `cr_12306_station_track_links`: 1,760 of 1,765 ordered station edges are path-traced over the rail graph, 5 use bounded rail-corridor sampling, and 0 use long ordered-stop straight fallbacks. The exporter cross-validates station coordinates before map use; for example, it repairs the bad `嘉兴` coordinate in `station_locations` back to Zhejiang using static station data and linked rail-track evidence.
+
 For the Tencent CVM, prefer an SSH tunnel instead of opening OceanBase to the public Internet:
 
 ```bash
@@ -140,6 +167,6 @@ OB_HOST=127.0.0.1 OB_PORT=2881 npm run 12306:migrate -- --create-database --trun
 
 1. Use `cr_12306_route_stop_sequences` and `cr_12306_route_edges` as the authoritative timetable route contract when a train number/departure date is present.
 2. Convert each ordered stop list into outbound and return route variants, matching the already implemented terminal turnaround behavior.
-3. Use `station_locations` for station coordinates and `station_track_links` plus `railway_tracks` for geometry validation/snap-to-rail enrichment.
+3. Use `station_locations` for station coordinates only after validation against static station data and linked track anchors; use `station_track_links` plus `railway_tracks` as the preferred station-to-station path geometry source.
 4. Use `tickets` and `ticket_prices` to calibrate OD fares by train class and seat class, not as a complete live inventory feed.
 5. Keep the current generated simulation tables for annual route-day aggregates and booking ledgers; the `cr_12306_` tables should complement them as source-of-truth reference data.

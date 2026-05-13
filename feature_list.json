@@ -100,5 +100,31 @@
       "Advance the train back to the original station and verify it completes only after the return leg"
     ],
     "passes": true
+  },
+  {
+    "id": "feature_local_oceanbase_12306_runtime_data",
+    "category": "data",
+    "description": "Load the local 12306.db snapshot into the Mac OceanBase Desktop tenant and run the browser simulation from OceanBase-derived ordered route contracts.",
+    "steps": [
+      "Verify OceanBase Desktop is running locally and accepts writes",
+      "Migrate 12306.db into cr_12306_* OceanBase tables",
+      "Export stations and routes from OceanBase into the simulation JSON contract",
+      "Start the static server and request /api/oceanbase-simulation-data",
+      "Open the app and verify the topbar reports OceanBase 12306 as the active data source"
+    ],
+    "passes": true
+  },
+  {
+    "id": "feature_oceanbase_rail_path_geometry",
+    "category": "data",
+    "description": "Build simulation train paths from OceanBase rail-track graph data and validate station coordinates so trains follow ordered station-to-station rail paths without haphazard turns.",
+    "steps": [
+      "Export routes from the local OceanBase 12306 tables",
+      "Validate raw station coordinates against static station data and linked track anchors",
+      "Trace consecutive station edges over cr_12306_railway_tracks and cr_12306_station_track_links",
+      "Verify there are no long ordered-stop straight fallbacks, >90 km coordinate hops, endpoint mismatches, or sharp backtracking hooks",
+      "Open the app and verify the OceanBase 12306 source still loads on the map"
+    ],
+    "passes": true
   }
 ]

@@ -29,6 +29,7 @@ def main() -> int:
     parser.add_argument('--batch-size', type=int, default=500)
     parser.add_argument('--keep-input', action='store_true', help='Do not delete the input file after load')
     parser.add_argument('--dry-run', action='store_true', help='Validate and count rows without requiring OceanBase credentials')
+    parser.add_argument('--allow-empty-password', action='store_true', help='Allow empty OceanBase password for local OceanBase Desktop tenants')
     args = parser.parse_args()
 
     input_path = Path(args.input).resolve()
@@ -62,9 +63,9 @@ def main() -> int:
         print(f'[oceanbase:booking-ingest] dry-run validated {len(rows)} bookings from {input_path.name} (skipped {skipped})')
         return 0
 
-    password = os.environ.get('OB_PASSWORD')
-    if not password:
-        raise SystemExit('OB_PASSWORD is required for booking ingestion.')
+    password = os.environ.get('OB_PASSWORD', '')
+    if not password and not args.allow_empty_password:
+        raise SystemExit('OB_PASSWORD is required for booking ingestion unless --allow-empty-password is set.')
 
     try:
         import pymysql
@@ -80,6 +81,7 @@ def main() -> int:
         charset='utf8mb4',
         autocommit=False,
     )
+    ensure_bookings_table(conn)
 
     sql = """
     INSERT INTO bookings (
@@ -111,6 +113,44 @@ def main() -> int:
 
     print(f'[oceanbase:booking-ingest] inserted/upserted {inserted} bookings from {input_path.name} (skipped {skipped})')
     return 0
+
+
+def ensure_bookings_table(conn: Any) -> None:
+    ddl = """
+    CREATE TABLE IF NOT EXISTS bookings (
+      ticket_id VARCHAR(64) NOT NULL,
+      run_id VARCHAR(96),
+      train_id VARCHAR(160),
+      train_code VARCHAR(64),
+      route_id VARCHAR(160),
+      passenger_id VARCHAR(64),
+      passenger_name VARCHAR(128),
+      origin_station VARCHAR(128),
+      destination_station VARCHAR(128),
+      origin_index INT,
+      destination_index INT,
+      seat_class VARCHAR(32),
+      seat_count INT,
+      seats_json VARCHAR(512),
+      price DECIMAL(12,2),
+      distance_km INT,
+      booked_at_minute INT,
+      booked_at_clock VARCHAR(8),
+      service_date DATE,
+      status VARCHAR(32),
+      no_show TINYINT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (ticket_id),
+      KEY idx_bookings_train (train_id),
+      KEY idx_bookings_route_date (route_id, service_date),
+      KEY idx_bookings_status (status),
+      KEY idx_bookings_run (run_id)
+    ) DEFAULT CHARSET=utf8mb4
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(ddl)
+    conn.commit()
 
 
 def booking_to_row(booking: dict[str, Any], run_id: str) -> tuple[Any, ...] | None:

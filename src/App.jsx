@@ -13,24 +13,27 @@ export default function App() {
   const [activeView, setActiveView] = useState('map');
   const [speed, setSpeed] = useState(60);
   const [error, setError] = useState('');
+  const [dataSource, setDataSource] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const [stationsResponse, routesResponse, annualSummary] = await Promise.all([
-          fetch('/station-data.json'),
-          fetch('/route-data.json'),
+        setLoading('Querying OceanBase route contracts...');
+        const [oceanbaseData, annualSummary] = await Promise.all([
+          fetchOptionalJson('/api/oceanbase-simulation-data'),
           fetchOptionalJson('/oceanbase-yearly-summary.json'),
         ]);
-        if (!stationsResponse.ok || !routesResponse.ok) {
-          throw new Error('Generated data is missing. Run ./init.sh or npm run prepare:data first.');
-        }
-        const stationData = await stationsResponse.json();
-        const routeData = await routesResponse.json();
+        const { stationData, routeData, source } = oceanbaseData?.routes?.length && oceanbaseData?.stations?.length
+          ? {
+              stationData: { stations: oceanbaseData.stations },
+              routeData: { routes: oceanbaseData.routes },
+              source: `OceanBase 12306 (${oceanbaseData.routes.length.toLocaleString()} routes)`,
+            }
+          : await loadStaticSimulationData();
         if (cancelled) return;
         setYearlySummary(annualSummary);
-        setLoading('Starting simulation worker thread...');
+        setLoading(`Starting simulation worker thread from ${source}...`);
         const worker = new SimulationWorkerClient({
           onSnapshot: (nextSnapshot) => {
             if (!cancelled) setSnapshot((previous) => mergeSnapshot(previous, nextSnapshot));
@@ -47,6 +50,8 @@ export default function App() {
           ledgerEndpoint: '/ingest-bookings',
         });
         await worker.start();
+        if (cancelled) return;
+        setDataSource(source);
         setLoading('');
       } catch (err) {
         setError(err.message);
@@ -93,7 +98,7 @@ export default function App() {
           <TrainFront size={28} />
           <div>
             <h1>China HSR Simulation</h1>
-            <p>{snapshot.stats.trainCount || snapshot.trains.length} trains · {snapshot.stats.activeTrains || 0} active · {snapshot.stats.totalPassengers.toLocaleString()} passengers · ¥{Math.round(snapshot.stats.totalRevenue).toLocaleString()}</p>
+            <p>{snapshot.stats.trainCount || snapshot.trains.length} trains · {snapshot.stats.activeTrains || 0} active · {snapshot.stats.totalPassengers.toLocaleString()} passengers · ¥{Math.round(snapshot.stats.totalRevenue).toLocaleString()}{dataSource ? ` · ${dataSource}` : ''}</p>
           </div>
         </div>
         <nav className="view-tabs" aria-label="Simulation views">
@@ -123,10 +128,31 @@ export default function App() {
   );
 }
 
+async function loadStaticSimulationData() {
+  const [stationsResponse, routesResponse] = await Promise.all([
+    fetch('/station-data.json'),
+    fetch('/route-data.json'),
+  ]);
+  if (!stationsResponse.ok || !routesResponse.ok) {
+    throw new Error('Generated data is missing. Run ./init.sh or npm run prepare:data first.');
+  }
+  const [stationData, routeData] = await Promise.all([
+    stationsResponse.json(),
+    routesResponse.json(),
+  ]);
+  return { stationData, routeData, source: 'static generated JSON fallback' };
+}
+
 async function fetchOptionalJson(path) {
-  const response = await fetch(`${path}?v=${Date.now()}`, { cache: 'no-store' });
-  if (!response.ok) return null;
-  return response.json();
+  try {
+    const response = await fetch(`${path}?v=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType && !contentType.includes('application/json')) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
 function LoadingScreen({ message }) {

@@ -132,11 +132,12 @@ npm run serve          # http://127.0.0.1:5174/
 | **Detailed seat objects in rolling day** | ~3.32 million seat calendars for the active service day |
 | **OSM rail-corridor features (rendering)** | 12,000 LineString features after simplification |
 | **OSM rail graph for path-tracing** | 254,501 nodes / 275,919 edges built from 347,132 rail features |
-| **Rail-traced route segments** | **82.8 %** path-traced via A\* over the rail graph |
+| **Rail-traced route segments** | **82.8 %** path-traced via A\* over the generated OSM rail graph |
 | **Rail-matched total** | **100.0 %** (rail-traced + corridor-sampled) — 0 long straight-line fallbacks |
+| **OceanBase 12306 runtime routes** | 222 high-speed/EMU routes, 481 stations, 1,760 rail-graph edges, 5 rail-corridor edges, 0 ordered-stop straight fallbacks |
 | **Geometry continuity** | 0 segment-boundary discontinuities, 0 long direct shortcuts in 231,757 coordinate transitions |
 | **Snapshot interval** | 150 ms from worker → UI |
-| **Tests** | 22/22 passing (booking, pricing, engine, monotonic movement, terminal return trips, no-show, live demand, day rollover, OceanBase dry-run, route contracts, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run) |
+| **Tests** | 25/25 passing (booking, pricing, engine, monotonic movement, terminal return trips, no-show, live demand, day rollover, OceanBase dry-run/export, route contracts, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run, OceanBase rail-path geometry) |
 
 ---
 
@@ -766,6 +767,25 @@ Load that snapshot into a reachable OceanBase MySQL-mode tenant:
 OB_PASSWORD=... npm run 12306:migrate -- --create-database --truncate
 ```
 
+For the current OceanBase Desktop install on this Mac, the healthy database endpoint is inside the `oceanbase-desktop` OrbStack VM. The local Desktop tenant accepts VM-local `root` with an empty password, so the live load/export path is:
+
+```bash
+orb -m oceanbase-desktop -u root bash -lc '
+  cd /Users/rogerlin/Downloads/chinashsr/ChinaHSR_Simulation &&
+  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
+    python3 scripts/migrate_12306_to_oceanbase.py \
+      --load --allow-empty-password \
+      --sqlite /Users/rogerlin/Downloads/chinashsr/12306.db \
+      --create-database --truncate &&
+  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
+    python3 scripts/export_oceanbase_simulation_data.py --allow-empty-password
+'
+```
+
+The static server exposes `GET /api/oceanbase-simulation-data`. On local OceanBase Desktop it queries through `orb -m oceanbase-desktop` first, then falls back to direct PyMySQL, then to `public/oceanbase-simulation-data.json` if the database is temporarily unavailable. The app topbar reports `OceanBase 12306 (...)` when this runtime source is active.
+
+The runtime export uses the ordered `cr_12306_route_stations` stop contract for station order, but it no longer trusts every raw station coordinate or draws sparse station chords. It cross-checks `cr_12306_station_locations` against the generated station catalog and linked track anchors, then builds a coordinate-level graph from `cr_12306_railway_tracks` and `cr_12306_station_track_links`. In the current local export, 1,760 of 1,765 ordered station edges are traced over that OceanBase rail graph, 5 use bounded rail-corridor sampling, and 0 fall back to long ordered-stop straight lines. The geometry regression test also guards the known `嘉兴` coordinate issue, endpoint anchoring, >90 km hops, and visible backtracking hooks.
+
 The generated dry-run artifacts are written under `exports/12306-oceanbase/` and ignored by git. The full database review and Tencent CVM deployment path live in [docs/12306-db-review.md](./docs/12306-db-review.md) and [docs/tencent-cvm-oceanbase-runbook.md](./docs/tencent-cvm-oceanbase-runbook.md).
 
 ### Indexing strategy
@@ -992,6 +1012,10 @@ tests/
 ├── bookingLedger.test.mjs        ← every booking captured with rich metadata,
 │                                    cancellations append status=cancelled,
 │                                    OceanBase ingest dry-run skips malformed rows
+├── oceanbaseRouteGeometry.test.mjs
+│                                  ← OceanBase 12306 export repairs bad station
+│                                    coordinates and rejects long chords,
+│                                    >90 km hops, and backtracking hooks
 └── oceanbaseSeed.test.mjs        ← 30-day OceanBase dry-run produces uncapped totals
 ```
 

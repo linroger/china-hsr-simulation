@@ -267,6 +267,7 @@ def main() -> int:
                 truncate=args.truncate,
                 batch_size=args.batch_size,
                 create_database=args.create_database,
+                allow_empty_password=args.allow_empty_password,
                 row_limit=args.row_limit,
             )
             write_json(output_dir / "load-result.json", load_result)
@@ -298,6 +299,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load", action="store_true", help="Connect to OceanBase and load the data.")
     parser.add_argument("--truncate", action="store_true", help="Truncate target tables before loading.")
     parser.add_argument("--create-database", action="store_true", help="Create OB_DATABASE if it does not exist.")
+    parser.add_argument(
+        "--allow-empty-password",
+        action="store_true",
+        help="Allow an empty OceanBase password for local OceanBase Desktop/SeekDB instances only.",
+    )
     args = parser.parse_args()
     if args.batch_size < 100:
         parser.error("--batch-size must be at least 100")
@@ -732,9 +738,10 @@ def load_oceanbase(
     truncate: bool,
     batch_size: int,
     create_database: bool,
+    allow_empty_password: bool,
     row_limit: int,
 ) -> dict[str, Any]:
-    ob_conn = connect_oceanbase(create_database=create_database)
+    ob_conn = connect_oceanbase(create_database=create_database, allow_empty_password=allow_empty_password)
     started = time.perf_counter()
     try:
         with ob_conn.cursor() as cursor:
@@ -775,15 +782,18 @@ def load_oceanbase(
         ob_conn.close()
 
 
-def connect_oceanbase(*, create_database: bool):
+def connect_oceanbase(*, create_database: bool, allow_empty_password: bool):
     try:
         import pymysql
     except ImportError as exc:
         raise SystemExit("PyMySQL is required for --load. Install it with python3 -m pip install PyMySQL.") from exc
 
-    password = os.environ.get("OB_PASSWORD")
-    if not password:
-        raise SystemExit("OB_PASSWORD is required for --load. No database password is stored in source.")
+    password = os.environ.get("OB_PASSWORD", "")
+    if not password and not allow_empty_password:
+        raise SystemExit(
+            "OB_PASSWORD is required for --load. For a local OceanBase Desktop tenant that intentionally has "
+            "an empty root password, rerun with --allow-empty-password."
+        )
 
     host = os.environ.get("OB_HOST", "127.0.0.1")
     port = int(os.environ.get("OB_PORT", "2881"))

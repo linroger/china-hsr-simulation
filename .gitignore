@@ -6,3 +6,8 @@ dist/
 npm-debug.log*
 logs/
 exports/
+.runtime/
+.playwright-cli/
+output/playwright/
+__pycache__/
+scripts/__pycache__/

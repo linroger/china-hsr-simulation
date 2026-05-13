@@ -6,6 +6,7 @@
   "scripts": {
     "prepare:data": "node scripts/prepare-data.cjs",
     "oceanbase:seed": "python3 scripts/oceanbase_seed.py",
+    "oceanbase:export": "python3 scripts/export_oceanbase_simulation_data.py",
     "12306:review": "python3 scripts/migrate_12306_to_oceanbase.py",
     "12306:migrate": "python3 scripts/migrate_12306_to_oceanbase.py --load",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
