@@ -631,7 +631,8 @@ export class SimulationEngine {
   }
 
   logEvent(type, message) {
-    this.events.unshift({ id: `${Date.now()}-${this.events.length}`, type, message, minute: Math.round(this.nowMinutes) });
+    const id = `${Date.now()}-${(this.eventCounter = (this.eventCounter || 0) + 1)}`;
+    this.events.unshift({ id, type, message, minute: Math.round(this.nowMinutes) });
     this.events = this.events.slice(0, 80);
   }
 
