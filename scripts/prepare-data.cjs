@@ -680,10 +680,9 @@ function buildRailGeojson(osmFeatures) {
   for (const item of sorted) {
     if (features.length >= RAIL_LINE_FEATURE_BUDGET || coordinateBudget > RAIL_LINE_VERTEX_BUDGET) break;
     const coordinates = item.coordinates;
-    const stride = Math.max(1, Math.ceil(coordinates.length / 80));
-    const simplified = coordinates.filter((_, index) => index % stride === 0);
-    const last = coordinates[coordinates.length - 1];
-    if (simplified[simplified.length - 1] !== last) simplified.push(last);
+    // Use curvature-aware vertex capping instead of uniform stride so
+    // important junctions and curves are not arbitrarily discarded.
+    const simplified = capVertexCount(coordinates, 80);
     coordinateBudget += simplified.length;
     features.push({
       type: 'Feature',
