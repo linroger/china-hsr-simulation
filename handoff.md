@@ -1,8 +1,8 @@
 # Handoff.md
 
-**Last Updated (UTC):** 2026-05-13T10:48:06Z
+**Last Updated (UTC):** 2026-05-13T10:53:00Z
 **Status:** Blocked
-**Current Focus:** Local `12306.db` review and OceanBase migration tooling are complete; remote Tencent CVM installation/load is blocked until a working SSH username/private key or console access is available.
+**Current Focus:** Local `12306.db` review and OceanBase migration tooling are complete; Tencent CVM SSH now works as `ubuntu`, but OceanBase installation is blocked by the CVM's very small memory footprint.
 
 This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 
@@ -107,6 +107,8 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Finding:** SSH port 22 on `43.160.208.85` is reachable, but both `root` and `ubuntu` passwordless login attempts failed with `Permission denied (publickey,password)`. The public key string supplied by the user is not enough to install OceanBase from this machine.
 - **Finding:** A follow-up password login attempt as `rogerlin@43.160.208.85` using the two user-supplied candidate passwords was also rejected. The passwords were not written to any project file.
 - **Finding:** A corrected follow-up password login attempt as `ubuntu@43.160.208.85` using the user-supplied candidate password was also rejected. The password was not written to any project file.
+- **Finding:** After the user reset the CVM password, SSH login as `ubuntu@43.160.208.85` succeeded. The account has passwordless sudo. The server is Ubuntu 24.04.4 LTS, x86_64, 2 vCPU, 961 MiB RAM, 1.9 GiB swap, and a 40 GB root disk with 32 GB available.
+- **Finding:** The current CVM is not sized for OceanBase. Official guidance reviewed earlier requires at least 6 GB memory for test/experience deployments and materially more for durable production-like use. This host can serve a static app or lightweight API, but should not run OceanBase.
 - **Decision:** Keep 12306-derived OceanBase tables under the `cr_12306_` prefix and add query views for route stop sequences, route edges, and ticket-route coverage so the new reference data complements rather than overwrites generated simulation tables.
 - **Decision:** The CVM deployment should expose only the app/API on 80/443. OceanBase 2881/ODP 2883/OBD Web 8680/Grafana 3000 should stay private or accessible only via SSH tunnels.
 - **Assumption:** Local CSV route records provide real origin/destination train services but not full stop-by-stop timetables. This remains true until a more authoritative timetable source is added.
@@ -123,6 +125,7 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Issue:** Tencent CVM install could not proceed. **Root cause:** SSH authentication is not configured for the available local keys/users; only the server IP and a public key were supplied. **Fix:** stop before any destructive or speculative remote action and provide a local runbook plus SSH-tunnel migration path. **Guardrail:** OceanBase ports stay private in the deployment plan.
 - **Issue:** Follow-up password login as `rogerlin` also failed. **Root cause:** The supplied candidate credentials are not accepted by the CVM for SSH. **Fix:** Stop after clean denial and keep remote install/load blocked until Tencent console access, a reset password, or the matching private key is available.
 - **Issue:** Follow-up password login as `ubuntu` also failed. **Root cause:** The supplied candidate credential is not accepted by the CVM for SSH. **Fix:** Stop after clean denial and keep remote install/load blocked until Tencent console access, a reset password, or the matching private key is available.
+- **Issue:** CVM SSH access is now fixed, but OceanBase cannot be installed responsibly on the current instance size. **Root cause:** The host has only 961 MiB RAM and is already using swap; OceanBase minimum test guidance is multiple GB of RAM. **Fix:** Defer OceanBase install until the CVM is resized or use local/managed OceanBase, while keeping the CVM suitable for static app/API hosting.
 
 ## 7) Scenario-Focused Resolution Tests (problem-centric)
 - **Requested change:** Seat opens after passenger gets off. **Repro steps:** Create a route A-B-C-D, allocate seat for A-C, attempt B-D, then allocate C-D. **Post-change behavior:** B-D cannot use the occupied seat, but C-D reuses the same physical seat because intervals touch but do not overlap. **Verdict:** Resolved by `SeatInventory`.
@@ -152,9 +155,9 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Performance/latency snapshots (if relevant):** Full-engine probe reported 5.156s Node initialization with synchronous preload, 2.69M passengers, 663 active trains, 6.62x passenger baseline, p95 quote 0.057 ms, and live ticks increasing passengers/revenue. Browser uses progressive preload to keep initial paint responsive.
 
 ## 9) Remaining Work & Next Steps
-- **Open items & blockers:** Remote CVM installation and live OceanBase load are blocked until SSH authentication is available. Batch attempts as `root` and `ubuntu`, password attempts as `rogerlin`, and a corrected password attempt as `ubuntu` have failed. Local OceanBase load is also still dependent on a running MySQL-mode tenant and `OB_PASSWORD`.
+- **Open items & blockers:** Remote CVM SSH access now works as `ubuntu`, but live OceanBase install/load is blocked by resources: 2 vCPU and 961 MiB RAM are far below OceanBase's practical minimum. Local OceanBase load is still dependent on a running MySQL-mode tenant and `OB_PASSWORD`.
 - **Risks:** `12306.db` is a dated snapshot rather than a live authorized 12306 feed. It is excellent for stop sequence, station, geometry, and fare calibration, but its ticket coverage is partial and should not be treated as complete live availability.
-- **Next working interval plan:** After SSH access is fixed, verify CVM resources (`nproc`, `free -h`, `df -h`), install OceanBase via OBD or Docker quick start, open only 80/443 publicly, run `npm run 12306:migrate -- --create-database --truncate` through an SSH tunnel, and capture live `cr_12306_` table counts.
+- **Next working interval plan:** Resize the CVM to at least 4 vCPU / 16 GB RAM for a credible single-node OceanBase demo, or keep this 1 GB CVM for app/API only and run OceanBase locally/managed. After resources are adequate, install OceanBase via OBD or Docker quick start, keep database ports private, run `npm run 12306:migrate -- --create-database --truncate` through an SSH tunnel, and capture live `cr_12306_` table counts.
 
 ## 10) Updates to This File (append-only)
 - 2026-05-02T10:41:20Z: Created the continuity record with request framing, acceptance criteria, plan, risks, and the first decision log.
@@ -182,3 +185,4 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - 2026-05-13T10:36:19Z: Completed local `12306.db` review, CVM/OceanBase runbook, migration script, npm review/migrate commands, and migration regression test. Marked live CVM install/load blocked on SSH authentication.
 - 2026-05-13T10:44:15Z: Tried follow-up password login as `rogerlin@43.160.208.85`; both user-supplied candidate passwords were rejected. No passwords were stored in project files.
 - 2026-05-13T10:48:06Z: Tried corrected follow-up password login as `ubuntu@43.160.208.85`; the user-supplied candidate password was rejected. No password was stored in project files.
+- 2026-05-13T10:53:00Z: After password reset, SSH login as `ubuntu@43.160.208.85` succeeded. Resource check found Ubuntu 24.04.4, 2 vCPU, 961 MiB RAM, 1.9 GiB swap, and 40 GB disk; OceanBase install is now blocked by instance size rather than credentials.

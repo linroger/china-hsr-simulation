@@ -107,3 +107,10 @@ Files touched: handoff.md, agent-progress.txt.
 Summary: Stopped the typo username attempt and tried SSH password login as `ubuntu@43.160.208.85` using the user-supplied candidate password. The server rejected it. The password value was not written to any project file.
 Tests run: SSH interactive login probe only; no application code changed.
 Result: Blocked. CVM installation and live OceanBase load still require Tencent console access, a reset/known-good SSH password, or the matching private key.
+
+2026-05-13T10:53:00Z | branch: main
+Feature/bug worked on: Successful Tencent CVM SSH authentication and resource check.
+Files touched: handoff.md, agent-progress.txt.
+Summary: After the user reset the password, SSH login as `ubuntu@43.160.208.85` succeeded. The account has passwordless sudo. The server reports Ubuntu 24.04.4 LTS on x86_64, 2 vCPU, 961 MiB RAM, 1.9 GiB swap, and a 40 GB root disk with 32 GB available. The password value was not written to any project file.
+Tests run: SSH identity/resource probe only; no application code changed.
+Result: Authentication is fixed, but OceanBase installation remains blocked by instance size. The CVM is suitable for static app/API hosting, but it is far below OceanBase's minimum memory guidance. Resize to at least 4 vCPU / 16 GB RAM for a credible single-node OceanBase demo, or use local/managed OceanBase while hosting only the app/API on this VM.
