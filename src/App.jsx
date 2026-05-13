@@ -194,6 +194,6 @@ function mergeSnapshot(previous, nextSnapshot) {
   if (!previous || nextSnapshot.bookingOptions) return nextSnapshot;
   return {
     ...nextSnapshot,
-    bookingOptions: previous.bookingOptions,
+    bookingOptions: previous.bookingOptions.slice(),
   };
 }
