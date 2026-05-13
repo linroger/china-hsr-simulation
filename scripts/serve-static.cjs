@@ -136,7 +136,8 @@ async function handleOceanBaseSimulationData(response) {
       return;
     }
     response.statusCode = 503;
-    response.end(JSON.stringify({ ok: false, reason: error.message }));
+    console.error('[serve] OceanBase export failed:', error.message);
+    response.end(JSON.stringify({ ok: false, reason: 'OceanBase data export unavailable. Please try again later.' }));
   }
 }
 
