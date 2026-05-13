@@ -266,7 +266,8 @@ export class SimulationEngine {
     this.stats.cumulativeTrainServices = (this.stats.cumulativeTrainServices || 0) + newTrains.length;
     Object.assign(this.stats, routeServiceStats);
     this.logEvent('calendar', `${calendar.dateLabel} ${calendar.dayName} service day opened with ${newTrains.length.toLocaleString()} new trains (${retained.length} retained from previous day).`);
-    if (this.autoPreloadDemand) this.preloadDemand();
+    // Background preload will start automatically via ensureBackgroundPreload
+    // in the worker. Synchronous preload here would freeze the UI for ~7s.
   }
 
   sellRealtimeDemand(requestCount = 6) {
