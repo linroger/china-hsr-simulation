@@ -11,3 +11,4 @@ exports/
 output/playwright/
 __pycache__/
 scripts/__pycache__/
+CLAUDE.md

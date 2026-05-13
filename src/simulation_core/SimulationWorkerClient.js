@@ -64,11 +64,19 @@ export class SimulationWorkerClient {
     }
   }
 
-  call(type, payload = {}) {
+  call(type, payload = {}, timeoutMs = 10000) {
     const id = this.nextId;
     this.nextId += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Worker call '${type}' timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pending.set(id, {
+        resolve: (val) => { clearTimeout(timer); resolve(val); },
+        reject: (err) => { clearTimeout(timer); reject(err); },
+      });
       this.worker.postMessage({ id, type, payload });
     });
   }

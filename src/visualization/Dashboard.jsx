@@ -1,10 +1,20 @@
+import { useMemo } from 'react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { CalendarDays, CircleDollarSign, Cpu, Database, Gauge, Timer, TrainFront, TrendingUp, Users } from 'lucide-react';
 
 export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummary }) {
   const trains = snapshot.trains || [];
-  const topLoads = trains.slice().sort((a, b) => b.loadFactor - a.loadFactor).slice(0, 18);
-  const revenueSeries = buildRevenueSeries(snapshot.bookings || []);
+
+  const topLoads = useMemo(() =>
+    trains.slice().sort((a, b) => b.loadFactor - a.loadFactor).slice(0, 18),
+    [trains]
+  );
+
+  const revenueSeries = useMemo(() =>
+    buildRevenueSeries(snapshot.bookings || []),
+    [snapshot.bookings]
+  );
+
   const annual = yearlySummary;
 
   return (

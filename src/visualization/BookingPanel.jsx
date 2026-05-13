@@ -43,7 +43,7 @@ export default function BookingPanel({ snapshot, quoteTrip, bookTrip }) {
     return () => {
       cancelled = true;
     };
-  }, [quoteTrip, selectedTrain?.id, originIndex, safeDestinationIndex, seatClass, snapshot.stats.totalBookings]);
+  }, [quoteTrip, selectedTrain?.id, originIndex, safeDestinationIndex, seatClass]);
 
   function handleTrainChange(nextTrainId) {
     setTrainId(nextTrainId);
