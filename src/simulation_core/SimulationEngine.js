@@ -604,7 +604,14 @@ export class SimulationEngine {
   }
 
   cancelBooking(ticketId) {
-    const booking = this.bookings.find((item) => item.ticketId === ticketId);
+    let booking = this.bookings.find((item) => item.ticketId === ticketId);
+    // If the global bookings array has wrapped, search per-train arrays.
+    if (!booking) {
+      for (const train of this.trains) {
+        booking = train.bookings.find((item) => item.ticketId === ticketId);
+        if (booking) break;
+      }
+    }
     if (!booking) return false;
     const train = this.getTrain(booking.trainId);
     train.inventory.releaseTicket(ticketId);
