@@ -244,6 +244,12 @@ function runJsonExport(attempt) {
 function readOceanBaseExportFallback(error) {
   const fallbackPath = path.join(ROOT, 'public', 'oceanbase-simulation-data.json');
   if (!fs.existsSync(fallbackPath)) return null;
+  const stats = fs.statSync(fallbackPath);
+  const ageHours = (Date.now() - stats.mtimeMs) / 3600000;
+  if (ageHours > 24) {
+    console.error(`[serve] fallback JSON is stale (${Math.round(ageHours)}h old); skipping.`);
+    return null;
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(fallbackPath, 'utf8'));
     return JSON.stringify({ ok: true, fallback: 'public/oceanbase-simulation-data.json', fallbackReason: error.message, ...parsed });
