@@ -1,4 +1,4 @@
-import { SeatInventory, CLASS_ORDER } from '../algorithms/seatInventory.js';
+import { SeatInventory } from '../algorithms/seatInventory.js';
 import { priceQuote, reconcileDemandForecast } from '../algorithms/pricing.js';
 import { haversineKm, interpolateCoord, interpolateLine } from './geo.js';
 
@@ -1119,7 +1119,6 @@ function serializeTrain(train, nowMinutes) {
   const segment = train.segments[displaySegmentIndex];
   const coords = interpolateLine(segment?.geometry, segmentProgress) || interpolateCoord(from, to, segmentProgress);
   const activeLoad = train.inventory.occupancyForSegment(safeSegmentIndex);
-  const classLoads = Object.fromEntries(CLASS_ORDER.map((seatClass) => [seatClass, train.inventory.occupancyForSegment(safeSegmentIndex, seatClass)]));
   const currentDelayMinutes = currentDelay(train);
   return {
     id: train.id,
@@ -1147,8 +1146,6 @@ function serializeTrain(train, nowMinutes) {
     loadFactor: activeLoad.loadFactor,
     passengerCount: activeLoad.occupied,
     capacity: activeLoad.capacity,
-    occupancy: Object.fromEntries(Object.entries(classLoads).map(([key, value]) => [key, value.occupied])),
-    classLoads,
     stops: train.stops.map((stop, index) => ({ name: stop.name, index })),
     totalDistanceKm: train.totalDistanceKm,
     departureMinute: train.departureMinute,
