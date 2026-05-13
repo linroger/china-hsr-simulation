@@ -658,6 +658,12 @@ def generate_and_optionally_insert_daily_rows(
                 totals[key] += result[key]
             daily_rollups.extend(result.get("daily_rollups", []))
             if conn is not None:
+                # Reconnect if the connection timed out during long multiprocessing.
+                try:
+                    conn.ping(reconnect=True)
+                except Exception as exc:
+                    log(f"  warning: connection ping failed, attempting reconnect: {exc}")
+                    conn = connect_oceanbase(read_db_config())
                 insert_daily_rows(conn, result["rows"], batch_size)
             completed_chunks += 1
             if completed_chunks % max(1, total_chunks // 10) == 0 or completed_chunks == total_chunks:
