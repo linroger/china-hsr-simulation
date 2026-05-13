@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 loadEnvFile(path.join(ROOT, '.env'));
@@ -57,7 +58,18 @@ const server = http.createServer((request, response) => {
 
   response.setHeader('Cache-Control', filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=300');
   response.setHeader('Content-Type', contentType(filePath));
-  fs.createReadStream(filePath).pipe(response);
+
+  const acceptEncoding = request.headers['accept-encoding'] || '';
+  const ext = path.extname(filePath);
+  const compressible = ['.json', '.geojson', '.js', '.css', '.html', '.svg', '.txt'].includes(ext);
+
+  if (compressible && acceptEncoding.includes('gzip')) {
+    response.setHeader('Content-Encoding', 'gzip');
+    response.setHeader('Vary', 'Accept-Encoding');
+    fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(response);
+  } else {
+    fs.createReadStream(filePath).pipe(response);
+  }
 });
 
 function handleIngestBookings(request, response) {

@@ -130,13 +130,21 @@ export default function HSRMap({ trains, events }) {
           'text-halo-width': 2,
         },
       });
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
       map.on('click', 'train-circles', (event) => {
         const feature = event.features?.[0];
         if (!feature) return;
         const p = feature.properties;
         new mapboxgl.Popup({ offset: 18 })
           .setLngLat(feature.geometry.coordinates)
-          .setHTML(`<div class="popup"><b>${p.code}</b><span>${p.direction}: ${p.current} to ${p.next}</span><span>Load ${(Number(p.load) * 100).toFixed(1)}% · ${p.pax}/${p.capacity}</span></div>`)
+          .setHTML(`<div class="popup"><b>${escapeHtml(p.code)}</b><span>${escapeHtml(p.direction)}: ${escapeHtml(p.current)} to ${escapeHtml(p.next)}</span><span>Load ${(Number(p.load) * 100).toFixed(1)}% · ${escapeHtml(p.pax)}/${escapeHtml(p.capacity)}</span></div>`)
           .addTo(map);
       });
       mapRef.current = map;
