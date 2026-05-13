@@ -78,7 +78,9 @@ function stopPublishing() {
 function postSnapshot(reason) {
   if (!engine) return;
   const serviceDayIndex = engine.currentServiceDayIndex;
-  const includeBookingOptions = reason === 'init' || reason === 'booking' || reason === 'manual' || serviceDayIndex !== lastPublishedServiceDayIndex;
+  // Never include booking options in preload snapshots — they are large and
+  // the UI doesn't need them until init/manual/booking/day-boundary.
+  const includeBookingOptions = (reason === 'init' || reason === 'booking' || reason === 'manual' || serviceDayIndex !== lastPublishedServiceDayIndex) && reason !== 'preload' && reason !== 'preload-complete';
   const snapshot = engine.snapshot({ includeBookingOptions });
   lastPublishedServiceDayIndex = serviceDayIndex;
   self.postMessage({
