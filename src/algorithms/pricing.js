@@ -52,7 +52,7 @@ export function reconcileDemandForecast({ routeDistanceKm, segmentLoad, dayOfWee
   const hub = stationTier === 'national-hub' ? 1.22 : stationTier === 'regional-hub' ? 1.1 : 1;
   const distance = routeDistanceKm > 900 ? 0.92 : routeDistanceKm > 350 ? 1.08 : 1;
   const pressure = 0.65 + segmentLoad * 0.7;
-  return round(weekend * peak * hub * distance * pressure * calendarDemand);
+  return Math.max(0.1, round(weekend * peak * hub * distance * pressure * calendarDemand));
 }
 
 function sigmoid(x) {
