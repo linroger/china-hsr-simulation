@@ -184,7 +184,7 @@ def connect_oceanbase(*, allow_empty_password: bool):
             charset="utf8mb4",
             cursorclass=DictCursor,
             connect_timeout=3,
-            read_timeout=20,
+            read_timeout=120,
         )
     except pymysql.err.OperationalError as exc:
         raise SystemExit(
@@ -334,6 +334,7 @@ def build_simulation_payload(
             )
         if missing:
             skipped_missing_coords += 1
+            print(f"[oceanbase:export] warning: skipping route {route_id} because stop '{stop_row['station_name']}' has no valid coordinates", file=sys.stderr)
             continue
 
         segments = []
