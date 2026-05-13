@@ -284,7 +284,9 @@ function isLargeRouteJump(previous, train) {
   }
   const lngDelta = Math.abs((train.coords.lng || 0) - (previous.coords.lng || 0));
   const latDelta = Math.abs((train.coords.lat || 0) - (previous.coords.lat || 0));
-  return Math.max(lngDelta, latDelta) > 0.35;
+  // Threshold lowered from 0.35° (~39 km) to 0.08° (~9 km) to catch more
+  // coordinate jumps and snap trains to their route instead of drawing chords.
+  return Math.max(lngDelta, latDelta) > 0.08;
 }
 
 function easeInOut(value) {
