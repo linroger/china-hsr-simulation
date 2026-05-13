@@ -144,9 +144,12 @@ async function loadStaticSimulationData() {
   return { stationData, routeData, source: 'static generated JSON fallback' };
 }
 
-async function fetchOptionalJson(path) {
+async function fetchOptionalJson(path, timeoutMs = 8000) {
   try {
-    const response = await fetch(`${path}?v=${Date.now()}`, { cache: 'no-store' });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(`${path}?v=${Date.now()}`, { cache: 'no-store', signal: controller.signal });
+    clearTimeout(timer);
     if (!response.ok) return null;
     const contentType = response.headers.get('content-type') || '';
     if (contentType && !contentType.includes('application/json')) return null;
