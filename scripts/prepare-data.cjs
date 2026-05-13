@@ -282,7 +282,7 @@ const enrichedRouteRecords = allRouteRecords.map((record) => ({
 const knownRoutes = enrichedRouteRecords.filter((record) => record.originKnown && record.destinationKnown);
 const serviceFrequency = new Map();
 for (const record of knownRoutes) {
-  const key = [record.origin, record.destination].sort().join('|');
+  const key = `${record.origin}|${record.destination}`;
   serviceFrequency.set(key, (serviceFrequency.get(key) || 0) + 1);
 }
 const maxFrequency = Math.max(1, ...serviceFrequency.values());
@@ -553,8 +553,8 @@ function deduplicateByOd(records) {
       byPair.set(key, record);
       continue;
     }
-    const existingFrequency = serviceFrequency.get([existing.origin, existing.destination].sort().join('|')) || 1;
-    const recordFrequency = serviceFrequency.get([record.origin, record.destination].sort().join('|')) || 1;
+    const existingFrequency = serviceFrequency.get(`${existing.origin}|${existing.destination}`) || 1;
+    const recordFrequency = serviceFrequency.get(`${record.origin}|${record.destination}`) || 1;
     if (recordFrequency > existingFrequency) byPair.set(key, record);
     else if (recordFrequency === existingFrequency && record.code.localeCompare(existing.code, 'zh-Hans-CN') < 0) byPair.set(key, record);
   }
@@ -596,8 +596,8 @@ function selectDiverseRecords(records, limit) {
 }
 
 function compareRoutePriority(a, b) {
-  const aFrequency = serviceFrequency.get([a.origin, a.destination].sort().join('|')) || 1;
-  const bFrequency = serviceFrequency.get([b.origin, b.destination].sort().join('|')) || 1;
+  const aFrequency = serviceFrequency.get(`${a.origin}|${a.destination}`) || 1;
+  const bFrequency = serviceFrequency.get(`${b.origin}|${b.destination}`) || 1;
   return bFrequency - aFrequency || b.distanceKm - a.distanceKm || a.code.localeCompare(b.code, 'zh-Hans-CN');
 }
 
