@@ -93,3 +93,10 @@ Next steps:
 1. Fix SSH access via Tencent console or provide the matching private key/username; then verify CVM resources with `nproc`, `free -h`, and `df -h`.
 2. Install OceanBase on the CVM using the documented OBD single-node path if resources are adequate, or Docker quick start for a disposable demo only.
 3. Keep OceanBase ports private and run `npm run 12306:migrate -- --create-database --truncate` through an SSH tunnel, then capture `cr_12306_` table counts.
+
+2026-05-13T10:44:15Z | branch: main
+Feature/bug worked on: Follow-up Tencent CVM SSH authentication probe.
+Files touched: handoff.md, agent-progress.txt.
+Summary: Tried SSH password login as `rogerlin@43.160.208.85` using the two user-supplied candidate passwords. Both attempts were rejected by the server. The password values were not written to any project file.
+Tests run: SSH interactive login probe only; no application code changed.
+Result: Blocked. CVM installation and live OceanBase load still require Tencent console access, a reset/known-good SSH password, or the matching private key.
