@@ -1119,40 +1119,26 @@ function serializeTrain(train, nowMinutes) {
   const segment = train.segments[displaySegmentIndex];
   const coords = interpolateLine(segment?.geometry, segmentProgress) || interpolateCoord(from, to, segmentProgress);
   const activeLoad = train.inventory.occupancyForSegment(safeSegmentIndex);
-  const currentDelayMinutes = currentDelay(train);
   return {
     id: train.id,
     code: train.code,
-    type: train.type,
     routeId: train.routeId,
     routeVariantId: train.routeVariantId,
     direction: train.direction,
-    legIndex: train.legIndex,
     origin: train.origin,
     destination: train.destination,
-    originalOrigin: train.originalOrigin,
-    originalDestination: train.originalDestination,
-    originProvince: train.originProvince,
-    destinationProvince: train.destinationProvince,
     corridor: train.corridor,
     currentStation: train.status === 'completed' ? to.name : from.name,
     nextStation: to.name,
     coords,
     status: train.status,
     currentSegmentIndex: displaySegmentIndex,
-    progress: segmentProgress,
     routeProgress: Math.round(((displaySegmentIndex + segmentProgress) / Math.max(1, train.segmentMinutes.length)) * 1000000) / 1000000,
-    journeyProgress: Math.round((((train.legIndex || 0) + ((displaySegmentIndex + segmentProgress) / Math.max(1, train.segmentMinutes.length))) / Math.max(1, (train.maxLegIndex || 0) + 1)) * 1000000) / 1000000,
     loadFactor: activeLoad.loadFactor,
     passengerCount: activeLoad.occupied,
     capacity: activeLoad.capacity,
     stops: train.stops.map((stop, index) => ({ name: stop.name, index })),
     totalDistanceKm: train.totalDistanceKm,
-    departureMinute: train.departureMinute,
-    delayMinutes: train.delayMinutes,
-    currentDelayMinutes,
-    minutesToDeparture: Math.round(train.departureMinute - nowMinutes),
-    turnaroundDepartureMinute: train.turnaroundDepartureMinute,
   };
 }
 
