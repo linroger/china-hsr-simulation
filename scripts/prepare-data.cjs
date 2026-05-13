@@ -934,13 +934,54 @@ function simplifyDouglasPeucker(coords, tolerance) {
 
 function capVertexCount(coords, maxVertices) {
   if (coords.length <= maxVertices) return coords;
-  const result = [coords[0]];
-  const step = (coords.length - 1) / (maxVertices - 1);
-  for (let i = 1; i < maxVertices - 1; i += 1) {
-    result.push(coords[Math.round(i * step)]);
+
+  // Curvature-aware vertex selection: keep endpoints plus the most
+  // geometrically important interior vertices (sharp turns, junctions).
+  // Uniform spacing alone can discard critical curvature points.
+  const importance = [];
+  for (let i = 1; i < coords.length - 1; i += 1) {
+    const prev = coords[i - 1];
+    const curr = coords[i];
+    const next = coords[i + 1];
+    // Angle deviation from straight line (0 = straight, π = U-turn)
+    const d1 = { lng: curr.lng - prev.lng, lat: curr.lat - prev.lat };
+    const d2 = { lng: next.lng - curr.lng, lat: next.lat - curr.lat };
+    const len1 = Math.hypot(d1.lng, d1.lat);
+    const len2 = Math.hypot(d2.lng, d2.lat);
+    let angle = 0;
+    if (len1 > 1e-12 && len2 > 1e-12) {
+      const dot = (d1.lng * d2.lng + d1.lat * d2.lat) / (len1 * len2);
+      angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+    }
+    // Also prefer vertices that are far from the chord connecting neighbors
+    // (significant deviation from straight line)
+    const chord = { lng: next.lng - prev.lng, lat: next.lat - prev.lat };
+    const chordLen = Math.hypot(chord.lng, chord.lat);
+    let deviation = 0;
+    if (chordLen > 1e-12) {
+      const cross = Math.abs(d1.lng * chord.lat - d1.lat * chord.lng);
+      deviation = cross / chordLen;
+    }
+    importance.push({ index: i, score: angle + deviation * 10 });
   }
-  result.push(coords[coords.length - 1]);
-  return result;
+
+  // Sort by importance descending and keep the top (maxVertices - 2)
+  importance.sort((a, b) => b.score - a.score);
+  const keepIndices = new Set([0, coords.length - 1]);
+  for (let i = 0; i < Math.min(maxVertices - 2, importance.length); i += 1) {
+    keepIndices.add(importance[i].index);
+  }
+
+  // If we still have room, fill with evenly-spaced vertices for coverage
+  if (keepIndices.size < maxVertices) {
+    const step = (coords.length - 1) / (maxVertices - 1);
+    for (let i = 1; i < maxVertices - 1; i += 1) {
+      const idx = Math.round(i * step);
+      if (keepIndices.size < maxVertices) keepIndices.add(idx);
+    }
+  }
+
+  return coords.filter((_, i) => keepIndices.has(i));
 }
 
 /**
