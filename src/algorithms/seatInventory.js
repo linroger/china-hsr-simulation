@@ -109,7 +109,9 @@ export class SeatInventory {
   }
 
   isSeatAvailable(seatId, originIndex, destinationIndex) {
-    this.validateInterval(originIndex, destinationIndex);
+    // Callers (availableSeats, availabilityCount, findAllocationGroup,
+    // allocate) already validate the interval. Skip redundant validation
+    // here to avoid re-checking bounds on every seat in the hot path.
     const seat = this.seatById.get(seatId);
     if (!seat) return false;
     return seat.intervals.every((held) => !intervalOverlaps(originIndex, destinationIndex, held.originIndex, held.destinationIndex));
