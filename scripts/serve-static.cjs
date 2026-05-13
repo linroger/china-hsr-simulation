@@ -337,5 +337,10 @@ function contentType(filePath) {
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
     '.ico': 'image/x-icon',
+    '.woff2': 'font/woff2',
+    '.webp': 'image/webp',
+    '.wasm': 'application/wasm',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
   }[ext] || 'application/octet-stream';
 }
