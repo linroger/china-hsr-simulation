@@ -203,6 +203,23 @@ function formatSimulationClock(snapshot) {
 
 function mergeSnapshot(previous, nextSnapshot) {
   if (!previous || nextSnapshot.bookingOptions) return nextSnapshot;
+
+  // Delta merge: update changed trains, remove vanished ones, keep the rest.
+  if (nextSnapshot.delta) {
+    const trainsById = new Map((previous.trains || []).map((t) => [t.id, t]));
+    for (const train of nextSnapshot.trains) {
+      trainsById.set(train.id, train);
+    }
+    for (const id of nextSnapshot.removedTrainIds || []) {
+      trainsById.delete(id);
+    }
+    return {
+      ...nextSnapshot,
+      trains: [...trainsById.values()],
+      bookingOptions: previous.bookingOptions.slice(),
+    };
+  }
+
   return {
     ...nextSnapshot,
     bookingOptions: previous.bookingOptions.slice(),

@@ -11,6 +11,7 @@ let ledgerTimer = null;
 let initialized = false;
 let lastPublishedServiceDayIndex = null;
 let ledgerEndpoint = null;
+let lastPublishedTrains = new Map();
 
 self.onmessage = (event) => {
   const { id, type, payload = {} } = event.data || {};
@@ -75,6 +76,21 @@ function stopPublishing() {
   publishTimer = null;
 }
 
+function trainStateChanged(a, b) {
+  if (!a || !b) return true;
+  return (
+    a.status !== b.status ||
+    a.currentSegmentIndex !== b.currentSegmentIndex ||
+    Math.abs(a.routeProgress - b.routeProgress) > 1e-6 ||
+    Math.abs(a.loadFactor - b.loadFactor) > 1e-4 ||
+    a.passengerCount !== b.passengerCount ||
+    a.currentStation !== b.currentStation ||
+    a.nextStation !== b.nextStation ||
+    Math.abs((a.coords?.lng || 0) - (b.coords?.lng || 0)) > 1e-8 ||
+    Math.abs((a.coords?.lat || 0) - (b.coords?.lat || 0)) > 1e-8
+  );
+}
+
 function postSnapshot(reason) {
   if (!engine) return;
   const serviceDayIndex = engine.currentServiceDayIndex;
@@ -82,12 +98,53 @@ function postSnapshot(reason) {
   // the UI doesn't need them until init/manual/booking/day-boundary.
   const includeBookingOptions = (reason === 'init' || reason === 'booking' || reason === 'manual' || serviceDayIndex !== lastPublishedServiceDayIndex) && reason !== 'preload' && reason !== 'preload-complete';
   const snapshot = engine.snapshot({ includeBookingOptions });
+
+  // Full snapshots on init, booking, manual, or day boundary. Deltas on tick.
+  const isFullSnapshot = reason === 'init' || reason === 'booking' || reason === 'manual' || serviceDayIndex !== lastPublishedServiceDayIndex;
+
+  if (isFullSnapshot) {
+    lastPublishedTrains = new Map(snapshot.trains.map((t) => [t.id, t]));
+    lastPublishedServiceDayIndex = serviceDayIndex;
+    self.postMessage({
+      type: 'snapshot',
+      reason,
+      snapshot: {
+        ...snapshot,
+        delta: false,
+        worker: workerInfo(),
+      },
+    });
+    return;
+  }
+
+  // Delta snapshot: only send trains whose state changed since last publish.
+  const changedTrains = [];
+  const currentIds = new Set();
+  for (const train of snapshot.trains) {
+    currentIds.add(train.id);
+    const last = lastPublishedTrains.get(train.id);
+    if (!last || trainStateChanged(last, train)) {
+      changedTrains.push(train);
+      lastPublishedTrains.set(train.id, train);
+    }
+  }
+
+  // Remove trains that are no longer in the visible set.
+  const removedTrainIds = [];
+  for (const [id, _] of lastPublishedTrains) {
+    if (!currentIds.has(id)) removedTrainIds.push(id);
+  }
+  for (const id of removedTrainIds) lastPublishedTrains.delete(id);
+
   lastPublishedServiceDayIndex = serviceDayIndex;
   self.postMessage({
     type: 'snapshot',
     reason,
     snapshot: {
       ...snapshot,
+      trains: changedTrains,
+      removedTrainIds,
+      delta: true,
       worker: workerInfo(),
     },
   });
