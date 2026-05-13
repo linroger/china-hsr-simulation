@@ -490,12 +490,19 @@ export class SimulationEngine {
       pricing,
       calendar: serviceCalendar,
       algorithmMs: Math.round(elapsedMs * 1000) / 1000,
+      departureMinute: train.departureMinute,
     };
   }
 
   bookTrip({ trainId, originIndex, destinationIndex, seatClass = 'secondClass', passengerName = 'Passenger', preference = 'any', accessible = false, groupSize = 1, silent = false }) {
     const quote = this.computeQuote({ trainId, originIndex, destinationIndex, seatClass, groupSize, exactAvailability: !silent });
     const train = this.getTrain(trainId);
+    // SE-3 guard: if the service day advanced between quote and book, the train
+    // reference is stale. Reject and ask the caller to retry.
+    if (train.departureMinute !== quote.departureMinute) {
+      this.stats.rejectedBookings += 1;
+      return { ok: false, reason: 'Train schedule changed. Please retry your booking.', quote };
+    }
     const currentVelocity = this.bookingVelocity.get(train.routeId) || 0;
     this.bookingVelocity.set(train.routeId, currentVelocity + groupSize);
     if (!quote.canBook) {
