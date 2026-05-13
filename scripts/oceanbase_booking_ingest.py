@@ -95,8 +95,14 @@ def main() -> int:
       %s, %s, %s, %s, %s,
       %s, %s, %s, %s, %s
     ) ON DUPLICATE KEY UPDATE
-      status=VALUES(status), no_show=VALUES(no_show),
-      seats_json=VALUES(seats_json), price=VALUES(price)
+      run_id=VALUES(run_id), train_code=VALUES(train_code), route_id=VALUES(route_id),
+      passenger_name=VALUES(passenger_name), origin_station=VALUES(origin_station),
+      destination_station=VALUES(destination_station), origin_index=VALUES(origin_index),
+      destination_index=VALUES(destination_index), seat_class=VALUES(seat_class),
+      seat_count=VALUES(seat_count), seats_json=VALUES(seats_json), price=VALUES(price),
+      distance_km=VALUES(distance_km), booked_at_minute=VALUES(booked_at_minute),
+      booked_at_clock=VALUES(booked_at_clock), service_date=VALUES(service_date),
+      status=VALUES(status), no_show=VALUES(no_show)
     """
 
     inserted = 0
@@ -110,6 +116,9 @@ def main() -> int:
                 if (start // args.batch_size + 1) % 10 == 0:
                     conn.commit()
             conn.commit()
+    except Exception as exc:
+        print(f'[oceanbase:booking-ingest] ERROR: ingest failed after {inserted} rows: {exc}')
+        return 1
     finally:
         conn.close()
 
