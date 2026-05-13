@@ -100,13 +100,18 @@ def main() -> int:
     """
 
     inserted = 0
-    with conn.cursor() as cursor:
-        for start in range(0, len(rows), args.batch_size):
-            chunk = rows[start:start + args.batch_size]
-            cursor.executemany(sql, chunk)
+    try:
+        with conn.cursor() as cursor:
+            for start in range(0, len(rows), args.batch_size):
+                chunk = rows[start:start + args.batch_size]
+                cursor.executemany(sql, chunk)
+                inserted += len(chunk)
+                # Commit every 10 batches (~10k rows) instead of every batch to reduce txn overhead.
+                if (start // args.batch_size + 1) % 10 == 0:
+                    conn.commit()
             conn.commit()
-            inserted += len(chunk)
-    conn.close()
+    finally:
+        conn.close()
 
     if not args.keep_input:
         input_path.unlink(missing_ok=True)
