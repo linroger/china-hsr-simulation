@@ -149,3 +149,22 @@ Result: Passing. All 6 improvement phases implemented; deferred no-shows with te
 Next steps:
 1. Phase 4 (Pre-scheduled service days) is still skipped — requires larger refactor of advanceServiceDay() to build tomorrow's trains in background chunks.
 2. Review COMPREHENSIVE_BUG_AUDIT.md and PERFORMANCE_AUDIT.md for the next highest-impact items.
+
+2026-05-14T01:00:00Z | branch: main
+Feature/bug worked on: Comprehensive audit fix sweep — ~45 commits addressing 80+ issues from COMPREHENSIVE_BUG_AUDIT.md.
+Files touched: src/simulation_core/SimulationEngine.js, src/algorithms/pricing.js, src/algorithms/seatInventory.js, src/visualization/Dashboard.jsx, src/visualization/BookingPanel.jsx, src/visualization/HSRMap.jsx, src/simulation_core/SimulationWorkerClient.js, src/App.jsx, scripts/serve-static.cjs, scripts/oceanbase_seed.py, scripts/oceanbase_booking_ingest.py, scripts/migrate_12306_to_oceanbase.py, scripts/export_oceanbase_simulation_data.py, scripts/prepare-data.cjs, init.sh, tests/engine.test.mjs, package.json.
+Summary:
+- Simulation engine: deferred no-shows, monotonic guard epsilon, booking indexes, stale trainId guard, leap-year calendar, live demand filter, empty segmentMinutes guard, nullish segment distance, event counter, train retention across days, average load weighting.
+- Pricing: minimum price floor ¥5, minimum forecast floor 0.1.
+- Seat inventory: ticketId index for O(1) releaseTicket.
+- Frontend: memoized Dashboard, debounced BookingPanel, worker timeout, XSS fix, null handlers on terminate, workerRef cleanup, mergeSnapshot clone, fetch timeout, animation throttle, unique keys, meter accessibility.
+- Static server: gzip, path traversal hardening, missing MIME types, OrbStack config, stale fallback rejection, generic errors, O(n²) concat fix, 5-min cache TTL.
+- Python scripts: connection cleanup, batch commits, full-field upsert, failed-ingest retention, reconnect during multiprocessing, try/finally around loads, all-or-nothing 12306 load, longer query timeout, visible skip logging, duplicate coordinate warnings, TEXT seats_json, null-safe parsing.
+- Data pipeline: directed OD frequency, tighter corridor tolerance, relaxed path rejection, tighter rail corridor sampling, Taiwan region, lower jump threshold, reduced province inference radius.
+- Config: Node >=18 engines field, ripgrep fallback in init.sh.
+Tests run: `npm run prepare:data` (85.8% rail-traced, 0 straight-fallback); `npm test` (25/25 passing); `npm run build` (passing); `bash -n init.sh` (passing); `python3 -m py_compile` on all .py files (passing).
+Result: Passing. Build, tests, data prep, and static smoke checks all green.
+Next steps:
+1. Review remaining audit items: DP-2 (rail node averaging drift), DP-8 (capVertexCount curvature preservation), SI-1 (group car contiguity), FE-12 (Mapbox token-free fallback).
+2. Consider adding integration tests for day-boundary booking retention.
+3. Evaluate if the increased repaired-jump count (4654) from DP-5 needs further geometry pipeline tuning.
