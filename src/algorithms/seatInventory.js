@@ -214,6 +214,10 @@ export class SeatInventory {
     return released;
   }
 
+  occupiedOnSegment(segmentIndex) {
+    return this.segmentLoadsTotal[segmentIndex] || 0;
+  }
+
   occupancyForSegment(segmentIndex, seatClass = null) {
     const capacity = seatClass ? this.capacityByClass.get(seatClass) || 0 : this.seats.length;
     const occupied = seatClass

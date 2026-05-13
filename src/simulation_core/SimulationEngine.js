@@ -1107,7 +1107,7 @@ function incrementRaw(map, key, train) {
   value.trains += 1;
   if (train.status === 'running') value.active += 1;
   const segmentIndex = Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1));
-  value.passengers += train.inventory.occupancyForSegment(segmentIndex).occupied || 0;
+  value.passengers += train.inventory.occupiedOnSegment(segmentIndex) || 0;
 }
 
 function serializeTrain(train, nowMinutes) {
