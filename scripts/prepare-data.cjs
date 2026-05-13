@@ -626,7 +626,7 @@ function corridorKey(origin, destination) {
 function macroRegion(station) {
   const province = station.province || '';
   if (/北京|天津|河北|山东|山西|河南/.test(province)) return 'North China';
-  if (/上海|江苏|浙江|安徽|福建|江西/.test(province)) return 'East China';
+  if (/上海|江苏|浙江|安徽|福建|江西|台湾/.test(province)) return 'East China';
   if (/广东|广西|海南|香港|澳门/.test(province)) return 'South China';
   if (/湖北|湖南/.test(province)) return 'Central China';
   if (/重庆|四川|贵州|云南|西藏/.test(province)) return 'Southwest China';
