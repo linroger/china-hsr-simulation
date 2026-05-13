@@ -14,7 +14,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 const USE_ORB_OCEANBASE = shouldUseOrbForLocalOceanBase();
 const LEDGER_DIR = process.env.CHINAHSR_LEDGER_DIR || (USE_ORB_OCEANBASE ? path.join(ROOT, '.runtime', 'ledger') : path.join(os.tmpdir(), 'chinahsr-ledger'));
 const ENABLE_OB_INGEST = process.env.CHINAHSR_DISABLE_INGEST !== '1' && (Boolean(process.env.OB_PASSWORD) || USE_ORB_OCEANBASE);
-const OCEANBASE_EXPORT_TTL_MS = Number(process.env.CHINAHSR_OCEANBASE_EXPORT_TTL_MS || 60_000);
+const OCEANBASE_EXPORT_TTL_MS = Number(process.env.CHINAHSR_OCEANBASE_EXPORT_TTL_MS || 300_000);
 const OCEANBASE_EXPORT_MAX_BYTES = Number(process.env.CHINAHSR_OCEANBASE_EXPORT_MAX_BYTES || 30 * 1024 * 1024);
 let oceanbaseExportCache = null;
 
