@@ -1,6 +1,6 @@
 # Handoff.md
 
-**Last Updated (UTC):** 2026-05-13T10:44:15Z
+**Last Updated (UTC):** 2026-05-13T10:48:06Z
 **Status:** Blocked
 **Current Focus:** Local `12306.db` review and OceanBase migration tooling are complete; remote Tencent CVM installation/load is blocked until a working SSH username/private key or console access is available.
 
@@ -106,6 +106,7 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Finding:** The route stop data is high value for the user's oscillation concern: 388/388 routes have stops, with zero duplicate station-order routes, zero non-1 starts, zero order-gap routes, and zero unmatched route-station names by `stations.station_name`.
 - **Finding:** SSH port 22 on `43.160.208.85` is reachable, but both `root` and `ubuntu` passwordless login attempts failed with `Permission denied (publickey,password)`. The public key string supplied by the user is not enough to install OceanBase from this machine.
 - **Finding:** A follow-up password login attempt as `rogerlin@43.160.208.85` using the two user-supplied candidate passwords was also rejected. The passwords were not written to any project file.
+- **Finding:** A corrected follow-up password login attempt as `ubuntu@43.160.208.85` using the user-supplied candidate password was also rejected. The password was not written to any project file.
 - **Decision:** Keep 12306-derived OceanBase tables under the `cr_12306_` prefix and add query views for route stop sequences, route edges, and ticket-route coverage so the new reference data complements rather than overwrites generated simulation tables.
 - **Decision:** The CVM deployment should expose only the app/API on 80/443. OceanBase 2881/ODP 2883/OBD Web 8680/Grafana 3000 should stay private or accessible only via SSH tunnels.
 - **Assumption:** Local CSV route records provide real origin/destination train services but not full stop-by-stop timetables. This remains true until a more authoritative timetable source is added.
@@ -121,6 +122,7 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Issue:** `./init.sh` secret scan failed on untracked generated logs. **Root cause:** `logs/` contained prior prompt/tool logs with a secret-looking Mapbox token. **Fix:** removed the generated log folder and ignored `logs/` going forward. **Guardrail:** rerunning `./init.sh` now completes through secret scan.
 - **Issue:** Tencent CVM install could not proceed. **Root cause:** SSH authentication is not configured for the available local keys/users; only the server IP and a public key were supplied. **Fix:** stop before any destructive or speculative remote action and provide a local runbook plus SSH-tunnel migration path. **Guardrail:** OceanBase ports stay private in the deployment plan.
 - **Issue:** Follow-up password login as `rogerlin` also failed. **Root cause:** The supplied candidate credentials are not accepted by the CVM for SSH. **Fix:** Stop after clean denial and keep remote install/load blocked until Tencent console access, a reset password, or the matching private key is available.
+- **Issue:** Follow-up password login as `ubuntu` also failed. **Root cause:** The supplied candidate credential is not accepted by the CVM for SSH. **Fix:** Stop after clean denial and keep remote install/load blocked until Tencent console access, a reset password, or the matching private key is available.
 
 ## 7) Scenario-Focused Resolution Tests (problem-centric)
 - **Requested change:** Seat opens after passenger gets off. **Repro steps:** Create a route A-B-C-D, allocate seat for A-C, attempt B-D, then allocate C-D. **Post-change behavior:** B-D cannot use the occupied seat, but C-D reuses the same physical seat because intervals touch but do not overlap. **Verdict:** Resolved by `SeatInventory`.
@@ -150,7 +152,7 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - **Performance/latency snapshots (if relevant):** Full-engine probe reported 5.156s Node initialization with synchronous preload, 2.69M passengers, 663 active trains, 6.62x passenger baseline, p95 quote 0.057 ms, and live ticks increasing passengers/revenue. Browser uses progressive preload to keep initial paint responsive.
 
 ## 9) Remaining Work & Next Steps
-- **Open items & blockers:** Remote CVM installation and live OceanBase load are blocked until SSH authentication is available. Batch attempts as `root`, `ubuntu`, and password attempts as `rogerlin` have failed. Local OceanBase load is also still dependent on a running MySQL-mode tenant and `OB_PASSWORD`.
+- **Open items & blockers:** Remote CVM installation and live OceanBase load are blocked until SSH authentication is available. Batch attempts as `root` and `ubuntu`, password attempts as `rogerlin`, and a corrected password attempt as `ubuntu` have failed. Local OceanBase load is also still dependent on a running MySQL-mode tenant and `OB_PASSWORD`.
 - **Risks:** `12306.db` is a dated snapshot rather than a live authorized 12306 feed. It is excellent for stop sequence, station, geometry, and fare calibration, but its ticket coverage is partial and should not be treated as complete live availability.
 - **Next working interval plan:** After SSH access is fixed, verify CVM resources (`nproc`, `free -h`, `df -h`), install OceanBase via OBD or Docker quick start, open only 80/443 publicly, run `npm run 12306:migrate -- --create-database --truncate` through an SSH tunnel, and capture live `cr_12306_` table counts.
 
@@ -179,3 +181,4 @@ This document uses MUST, SHOULD, and MAY as defined in RFC 2119.
 - 2026-05-13T10:12:52Z: Reopened for `12306.db` review and Tencent CVM/OceanBase deployment planning. Added R28-R30, recorded Mapbox secret-handling decision, and noted that remote access may need private-key/login discovery.
 - 2026-05-13T10:36:19Z: Completed local `12306.db` review, CVM/OceanBase runbook, migration script, npm review/migrate commands, and migration regression test. Marked live CVM install/load blocked on SSH authentication.
 - 2026-05-13T10:44:15Z: Tried follow-up password login as `rogerlin@43.160.208.85`; both user-supplied candidate passwords were rejected. No passwords were stored in project files.
+- 2026-05-13T10:48:06Z: Tried corrected follow-up password login as `ubuntu@43.160.208.85`; the user-supplied candidate password was rejected. No password was stored in project files.
