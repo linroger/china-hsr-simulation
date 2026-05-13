@@ -365,6 +365,7 @@ export class SimulationEngine {
     train.originProvince = route.destinationProvince;
     train.destinationProvince = route.originProvince;
     train.stops = returnStops;
+    train._serializedStops = null;
     train.segments = returnSegments;
     train.inventory = new SeatInventory(returnStops);
     train.bookings = [];
@@ -768,7 +769,7 @@ export class SimulationEngine {
             destinationProvince: train.destinationProvince,
             // Send only stop names to reduce snapshot size; the frontend only
             // needs names for the booking panel dropdowns.
-            stops: train.stops.map((stop, index) => ({ name: stop.name, index })),
+            stops: train._serializedStops || (train._serializedStops = train.stops.map((stop, index) => ({ name: stop.name, index }))),
             totalDistanceKm: train.totalDistanceKm,
             seatQuota: TRAIN_SEAT_QUOTA,
           };
