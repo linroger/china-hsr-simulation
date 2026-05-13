@@ -1046,9 +1046,14 @@ def bulk_execute(conn, sql: str, rows: list[tuple[Any, ...]], batch_size: int) -
     if not rows:
         return
     with conn.cursor() as cursor:
+        batch_index = 0
         for start in range(0, len(rows), batch_size):
             cursor.executemany(sql, rows[start:start + batch_size])
-            conn.commit()
+            batch_index += 1
+            # Commit every 10 batches instead of every batch to reduce txn overhead.
+            if batch_index % 10 == 0:
+                conn.commit()
+        conn.commit()
 
 
 def upsert_simulation_run(conn, summary: dict[str, Any], summary_path: str) -> None:
@@ -1105,14 +1110,14 @@ def query_table_counts(conn, run_id: str) -> dict[str, int]:
         "dailyRouteServicesForRun": ("SELECT COUNT(*) FROM daily_route_services WHERE run_id = %s", (run_id,)),
         "calendarSummaryForRun": ("SELECT COUNT(*) FROM calendar_summary WHERE run_id = %s", (run_id,)),
     }
-    counts: dict[str, int] = {}
+    counts: dict[str, int | None] = {}
     with conn.cursor() as cursor:
         for key, (sql, params) in queries.items():
             try:
                 cursor.execute(sql, params)
                 counts[key] = int(cursor.fetchone()[0])
             except Exception as exc:  # noqa: BLE001
-                counts[key] = 0
+                counts[key] = None
                 log(f"  warning: count query for {key} failed: {exc}")
     return counts
 
