@@ -145,7 +145,7 @@ def ensure_bookings_table(conn: Any) -> None:
       destination_index INT,
       seat_class VARCHAR(32),
       seat_count INT,
-      seats_json VARCHAR(512),
+      seats_json TEXT,
       price DECIMAL(12,2),
       distance_km INT,
       booked_at_minute INT,
@@ -188,7 +188,7 @@ def booking_to_row(booking: dict[str, Any], run_id: str) -> tuple[Any, ...] | No
         booking.get('destinationIndex'),
         booking.get('seatClass'),
         len(seats),
-        json.dumps(seats, ensure_ascii=False, separators=(',', ':'))[:500],
+        json.dumps(seats, ensure_ascii=False, separators=(',', ':')),
         safe_float(booking.get('price')),
         safe_int(booking.get('distanceKm')),
         safe_int(booking.get('bookedAtMinute')),
@@ -199,18 +199,22 @@ def booking_to_row(booking: dict[str, Any], run_id: str) -> tuple[Any, ...] | No
     )
 
 
-def safe_float(value: Any) -> float:
+def safe_float(value: Any) -> float | None:
+    if value is None or value == '':
+        return None
     try:
-        return float(value or 0)
+        return float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
-def safe_int(value: Any) -> int:
+def safe_int(value: Any) -> int | None:
+    if value is None or value == '':
+        return None
     try:
-        return int(value or 0)
+        return int(value)
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
 if __name__ == '__main__':
