@@ -392,9 +392,13 @@ export class SimulationEngine {
     for (const booking of train.bookings) {
       const seatCount = booking.seats?.length || 1;
       if (booking.originIndex === stationIndex && booking.status === 'confirmed') {
-        if (booking.noShow) {
+        // Determine no-show at departure time, not at booking time
+        // Allow manual override (e.g. for tests) while keeping deferred evaluation as default.
+        const willNoShow = booking.noShow || this.random(booking.ticketId, train.departureMinute, 'noShow') < noShowProbability(train, stationIndex, booking.seatClass);
+        if (willNoShow) {
           train.inventory.releaseTicket(booking.ticketId);
           booking.status = 'noShow';
+          booking.noShow = true;
           noShows += seatCount;
           this.stats.noShows += seatCount;
         } else {
@@ -509,7 +513,7 @@ export class SimulationEngine {
       distanceKm: quote.distanceKm,
       bookedAtMinute: this.nowMinutes,
       status: 'confirmed',
-      noShow: this.random(trainId, originIndex, destinationIndex, this.stats.totalBookings, 'noShow') < noShowProbability(train, originIndex, seatClass),
+      noShow: false,
     };
     train.bookings.push(booking);
     if (train.bookings.length > 1500) train.bookings = train.bookings.slice(-1500);
