@@ -28,7 +28,7 @@ export function priceQuote({
   const expectedDemandLift = Math.exp(elasticity * Math.log(Math.max(0.7, scarcity * timePressure * velocityMultiplier)));
   const raw = (baseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer * velocityMultiplier * Math.max(0.8, surgeMultiplier);
   return {
-    price: roundToNearest(raw, 5),
+    price: roundToNearest(Math.max(5, raw), 5),
     baseFare: roundToNearest(baseFare, 1),
     bidPrice: roundToNearest(bidPrice, 1),
     loadFactor,
