@@ -71,6 +71,7 @@ export class SeatInventory {
     this.capacityByClass = new Map();
     this.segmentLoadsByClass = new Map();
     this.segmentLoadsTotal = Array.from({ length: routeStations.length - 1 }, () => 0);
+    this.ticketIndex = new Map(); // ticketId -> [{ seat, interval }]
     for (const seat of this.seats) {
       if (!this.seatsByClass.has(seat.seatClass)) this.seatsByClass.set(seat.seatClass, []);
       this.seatsByClass.get(seat.seatClass).push(seat);
@@ -81,7 +82,13 @@ export class SeatInventory {
       this.segmentLoadsByClass.set(seatClass, Array.from({ length: routeStations.length - 1 }, () => 0));
     }
     for (const seat of this.seats) {
-      for (const interval of seat.intervals) this.adjustSegmentLoads(seat.seatClass, interval.originIndex, interval.destinationIndex, 1);
+      for (const interval of seat.intervals) {
+        this.adjustSegmentLoads(seat.seatClass, interval.originIndex, interval.destinationIndex, 1);
+        if (interval.ticketId) {
+          if (!this.ticketIndex.has(interval.ticketId)) this.ticketIndex.set(interval.ticketId, []);
+          this.ticketIndex.get(interval.ticketId).push({ seat, interval });
+        }
+      }
     }
   }
 
@@ -147,9 +154,14 @@ export class SeatInventory {
     const group = this.findAllocationGroup({ originIndex, destinationIndex, seatClass, accessible, preference, groupSize });
     if (!group) return null;
     for (const seat of group) {
-      seat.intervals.push({ originIndex, destinationIndex, passengerId, ticketId });
+      const interval = { originIndex, destinationIndex, passengerId, ticketId };
+      seat.intervals.push(interval);
       seat.intervals.sort((a, b) => a.originIndex - b.originIndex || a.destinationIndex - b.destinationIndex);
       this.adjustSegmentLoads(seat.seatClass, originIndex, destinationIndex, 1);
+      if (ticketId) {
+        if (!this.ticketIndex.has(ticketId)) this.ticketIndex.set(ticketId, []);
+        this.ticketIndex.get(ticketId).push({ seat, interval });
+      }
     }
     return group.map((seat) => ({
       seatId: seat.id,
@@ -187,14 +199,18 @@ export class SeatInventory {
   }
 
   releaseTicket(ticketId) {
+    const entries = this.ticketIndex.get(ticketId);
+    if (!entries) return 0;
     let released = 0;
-    for (const seat of this.seats) {
+    for (const { seat, interval } of entries) {
       const before = seat.intervals.length;
-      const releasedIntervals = seat.intervals.filter((interval) => interval.ticketId === ticketId);
-      seat.intervals = seat.intervals.filter((interval) => interval.ticketId !== ticketId);
-      for (const interval of releasedIntervals) this.adjustSegmentLoads(seat.seatClass, interval.originIndex, interval.destinationIndex, -1);
-      released += before - seat.intervals.length;
+      seat.intervals = seat.intervals.filter((i) => i !== interval);
+      if (seat.intervals.length < before) {
+        this.adjustSegmentLoads(seat.seatClass, interval.originIndex, interval.destinationIndex, -1);
+        released += 1;
+      }
     }
+    this.ticketIndex.delete(ticketId);
     return released;
   }
 
