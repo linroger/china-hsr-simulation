@@ -643,7 +643,12 @@ export class SimulationEngine {
   }
 
   snapshot({ includeBookingOptions = true } = {}) {
-    const calendar = calendarState(this.nowMinutes);
+    const nowMinuteFloor = Math.floor(this.nowMinutes);
+    if (nowMinuteFloor !== this._lastCalendarMinute) {
+      this._lastCalendarMinute = nowMinuteFloor;
+      this._cachedCalendar = calendarState(this.nowMinutes);
+    }
+    const calendar = this._cachedCalendar;
 
     // Build candidate lists in a single pass to avoid intermediate arrays.
     const active = [];
