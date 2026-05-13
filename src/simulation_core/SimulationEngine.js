@@ -573,14 +573,32 @@ export class SimulationEngine {
 
   snapshot({ includeBookingOptions = true } = {}) {
     const calendar = calendarState(this.nowMinutes);
-    const serialized = this.trains.map((train) => serializeTrain(train, this.nowMinutes));
-    const visibleTrains = selectVisibleTrains(serialized, SNAPSHOT_TRAIN_LIMIT);
+
+    // Compute lightweight candidate objects for filtering (no geo interpolation)
+    const candidates = this.trains.map((train) => ({
+      raw: train,
+      status: train.status,
+      minutesToDeparture: Math.round(train.departureMinute - this.nowMinutes),
+      stopsLength: train.stops.length,
+      currentSegmentIndex: train.currentSegmentIndex,
+      segmentProgress: train.segmentProgress,
+      loadFactor: train.inventory.occupancyForSegment(Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1))).loadFactor,
+    }));
+
+    const active = candidates.filter((c) => c.status === 'running');
+    const scheduled = candidates.filter((c) => c.status === 'scheduled' && c.minutesToDeparture <= 120);
+    const completed = candidates.filter((c) => c.status === 'completed');
+
+    const visibleCandidates = selectVisibleCandidates(active, scheduled, completed, SNAPSHOT_TRAIN_LIMIT);
+    const visibleTrains = visibleCandidates.map((c) => serializeTrain(c.raw, this.nowMinutes));
+
     let bookingOptions;
     if (includeBookingOptions || this.bookingOptionsDirty) {
       this.bookingOptions = this.createBookingOptions();
       this.bookingOptionsDirty = false;
       bookingOptions = this.bookingOptions;
     }
+
     return {
       nowMinutes: Math.round(this.nowMinutes),
       calendar,
@@ -597,20 +615,20 @@ export class SimulationEngine {
         cumulativeTrainServices: this.stats.cumulativeTrainServices,
         detailedDayTrainBudget: this.stats.detailedDayTrainBudget,
         fullYearCompleted: this.stats.fullYearCompleted || false,
-        activeTrains: serialized.filter((train) => train.status === 'running').length,
-        scheduledTrains: serialized.filter((train) => train.status === 'scheduled').length,
-        completedTrains: serialized.filter((train) => train.status === 'completed').length,
+        activeTrains: active.length,
+        scheduledTrains: scheduled.length,
+        completedTrains: completed.length,
         visibleTrainCount: visibleTrains.length,
-        averageDelayMinutes: average(serialized.map((train) => train.delayMinutes || 0)),
-        delayedTrains: serialized.filter((train) => (train.delayMinutes || 0) >= 5).length,
-        activeAverageDelayMinutes: average(serialized.filter((train) => train.status === 'running').map((train) => train.currentDelayMinutes || 0)),
-        activeDelayedTrains: serialized.filter((train) => train.status === 'running' && (train.currentDelayMinutes || 0) >= 3).length,
+        averageDelayMinutes: average(this.trains.map((train) => train.delayMinutes || 0)),
+        delayedTrains: this.trains.filter((train) => (train.delayMinutes || 0) >= 5).length,
+        activeAverageDelayMinutes: average(this.trains.filter((train) => train.status === 'running').map((train) => currentDelay(train))),
+        activeDelayedTrains: this.trains.filter((train) => train.status === 'running' && currentDelay(train) >= 3).length,
       },
       bookings: this.bookings.slice(-12).reverse(),
       events: this.events,
       trains: visibleTrains,
       bookingOptions,
-      network: networkSummary(serialized),
+      network: networkSummaryFromTrains(this.trains, this.nowMinutes),
     };
   }
 
@@ -619,26 +637,36 @@ export class SimulationEngine {
   }
 
   createBookingOptions() {
-    return this.trains.map((train) => ({
-      id: train.id,
-      code: train.code,
-      routeId: train.routeId,
-      routeVariantId: train.routeVariantId,
-      direction: train.direction,
-      origin: train.origin,
-      destination: train.destination,
-      corridor: train.corridor,
-      originProvince: train.originProvince,
-      destinationProvince: train.destinationProvince,
-      stops: train.stops.map((stop, index) => ({ ...stop, index })),
-      departureMinute: train.departureMinute,
-      departureClock: formatClock(train.departureMinute),
-      serviceDate: train.calendar?.dateLabel,
-      servicesForRoute: train.servicesForRoute,
-      serviceIndexForRoute: train.serviceIndexForRoute,
-      totalDistanceKm: train.totalDistanceKm,
-      seatQuota: TRAIN_SEAT_QUOTA,
-    }));
+    if (!this._routeBookingOptions) this._routeBookingOptions = new Map();
+    return this.trains.map((train) => {
+      let base = this._routeBookingOptions.get(train.routeId);
+      if (!base) {
+        base = {
+          routeId: train.routeId,
+          code: train.code,
+          origin: train.origin,
+          destination: train.destination,
+          corridor: train.corridor,
+          originProvince: train.originProvince,
+          destinationProvince: train.destinationProvince,
+          stops: train.stops.map((stop, index) => ({ ...stop, index })),
+          totalDistanceKm: train.totalDistanceKm,
+          seatQuota: TRAIN_SEAT_QUOTA,
+        };
+        this._routeBookingOptions.set(train.routeId, base);
+      }
+      return {
+        ...base,
+        id: train.id,
+        direction: train.direction,
+        routeVariantId: train.routeVariantId,
+        departureMinute: train.departureMinute,
+        departureClock: formatClock(train.departureMinute),
+        serviceDate: train.calendar?.dateLabel,
+        servicesForRoute: train.servicesForRoute,
+        serviceIndexForRoute: train.serviceIndexForRoute,
+      };
+    });
   }
 }
 
@@ -886,6 +914,26 @@ function selectVisibleTrains(trains, limit) {
   return [...active, ...scheduledSlice, ...completedSlice];
 }
 
+function selectVisibleCandidates(active, scheduled, completed, limit) {
+  if (active.length >= limit) {
+    return active
+      .sort((a, b) => {
+        const totalA = (a.stopsLength || 1) - 1;
+        const totalB = (b.stopsLength || 1) - 1;
+        const progressA = (a.currentSegmentIndex || 0) / Math.max(1, totalA);
+        const progressB = (b.currentSegmentIndex || 0) / Math.max(1, totalB);
+        return progressB - progressA;
+      })
+      .slice(0, limit);
+  }
+  const remaining = limit - active.length;
+  const scheduledSlice = scheduled
+    .sort((a, b) => a.minutesToDeparture - b.minutesToDeparture)
+    .slice(0, Math.min(remaining, scheduled.length));
+  const completedSlice = completed.slice(-Math.min(Math.max(0, remaining - scheduledSlice.length), 60));
+  return [...active, ...scheduledSlice, ...completedSlice];
+}
+
 function networkSummary(trains) {
   const byCorridor = new Map();
   const byProvince = new Map();
@@ -902,12 +950,42 @@ function networkSummary(trains) {
   };
 }
 
+function networkSummaryFromTrains(trains, nowMinutes) {
+  const byCorridor = new Map();
+  const byProvince = new Map();
+  const byStation = new Map();
+  for (const train of trains) {
+    incrementRaw(byCorridor, train.corridor || 'Unknown', train);
+    incrementRaw(byProvince, train.originProvince || 'Unknown', train);
+    if (train.status === 'running') {
+      const safeSegmentIndex = Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1));
+      const displaySegmentIndex = train.status === 'completed' ? Math.max(0, (train.stops?.length || 1) - 2) : safeSegmentIndex;
+      const from = train.stops[displaySegmentIndex] || train.stops[0];
+      incrementRaw(byStation, from.name || 'Unknown', train);
+    }
+  }
+  return {
+    corridors: [...byCorridor.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
+    originProvinces: [...byProvince.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
+    stationHotspots: [...byStation.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.active - a.active || b.passengers - a.passengers).slice(0, 16),
+  };
+}
+
 function increment(map, key, train) {
   if (!map.has(key)) map.set(key, { trains: 0, active: 0, passengers: 0 });
   const value = map.get(key);
   value.trains += 1;
   if (train.status === 'running') value.active += 1;
   value.passengers += train.passengerCount || 0;
+}
+
+function incrementRaw(map, key, train) {
+  if (!map.has(key)) map.set(key, { trains: 0, active: 0, passengers: 0 });
+  const value = map.get(key);
+  value.trains += 1;
+  if (train.status === 'running') value.active += 1;
+  const segmentIndex = Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1));
+  value.passengers += train.inventory.occupancyForSegment(segmentIndex).occupied || 0;
 }
 
 function serializeTrain(train, nowMinutes) {
