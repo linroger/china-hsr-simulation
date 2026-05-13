@@ -164,14 +164,22 @@ function buildOceanBaseExportAttempts() {
   const directArgs = [path.join(ROOT, 'scripts', 'export_oceanbase_simulation_data.py'), '--stdout', '--route-limit', routeLimit];
   if (includeAll) directArgs.push('--include-all-classes');
 
-  const orbArgs = ['-m', 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbExportCommand({ routeLimit, includeAll })];
   const direct = { label: 'direct', command: process.env.CHINAHSR_PYTHON || 'python3', args: directArgs, env: process.env };
-  const orb = { label: 'orb', command: process.env.ORB_BIN || '/opt/homebrew/bin/orb', args: orbArgs, env: process.env };
   const explicitOrb = process.env.CHINAHSR_OCEANBASE_VIA_ORB === '1';
   const explicitDirect = process.env.CHINAHSR_OCEANBASE_VIA_ORB === '0';
-  if (explicitOrb) return [orb, direct];
   if (explicitDirect) return [direct];
-  return isLocalHost(host) ? [orb, direct] : [direct, orb];
+
+  const orbBin = process.env.ORB_BIN || '/opt/homebrew/bin/orb';
+  const orbAvailable = (() => {
+    try { return require('fs').existsSync(orbBin); } catch { return false; }
+  })();
+  if (orbAvailable || explicitOrb) {
+    const orbArgs = ['-m', process.env.ORB_VM_NAME || 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbExportCommand({ routeLimit, includeAll })];
+    const orb = { label: 'orb', command: orbBin, args: orbArgs, env: process.env };
+    if (explicitOrb) return [orb, direct];
+    return isLocalHost(host) ? [orb, direct] : [direct, orb];
+  }
+  return [direct];
 }
 
 function buildOrbExportCommand({ routeLimit, includeAll }) {
@@ -244,7 +252,7 @@ function readOceanBaseExportFallback(error) {
 
 function runIngestProcess(filePath, count) {
   const child = USE_ORB_OCEANBASE
-    ? spawn(process.env.ORB_BIN || '/opt/homebrew/bin/orb', ['-m', 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbIngestCommand(filePath)], {
+    ? spawn(process.env.ORB_BIN || '/opt/homebrew/bin/orb', ['-m', process.env.ORB_VM_NAME || 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbIngestCommand(filePath)], {
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -319,7 +327,9 @@ function isLocalHost(host) {
 function shouldUseOrbForLocalOceanBase() {
   if (process.env.CHINAHSR_OCEANBASE_VIA_ORB === '1') return true;
   if (process.env.CHINAHSR_OCEANBASE_VIA_ORB === '0') return false;
-  return isLocalHost(process.env.OB_HOST || '127.0.0.1');
+  const orbBin = process.env.ORB_BIN || '/opt/homebrew/bin/orb';
+  const orbAvailable = (() => { try { return fs.existsSync(orbBin); } catch { return false; } })();
+  return orbAvailable && isLocalHost(process.env.OB_HOST || '127.0.0.1');
 }
 
 function shellQuote(value) {
