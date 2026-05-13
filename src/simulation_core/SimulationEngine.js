@@ -55,6 +55,7 @@ export class SimulationEngine {
     this.lastTickMs = null;
     this.bookingCounter = 0;
     this.bookingOptionsDirty = false;
+    this.bookingVelocity = new Map();
     if (preloadDemand) this.preloadDemand();
     this.tick(0);
   }
@@ -207,7 +208,17 @@ export class SimulationEngine {
 
   tick(realSeconds = 1) {
     if (this.stats.fullYearCompleted) return;
+    const previousMinute = Math.floor(this.nowMinutes);
     this.nowMinutes += realSeconds * this.speed / 60;
+    const currentMinute = Math.floor(this.nowMinutes);
+    if (currentMinute !== previousMinute) {
+      // Decay booking velocity every simulated minute
+      for (const [routeId, velocity] of this.bookingVelocity) {
+        const decayed = velocity * 0.95;
+        if (decayed < 0.1) this.bookingVelocity.delete(routeId);
+        else this.bookingVelocity.set(routeId, decayed);
+      }
+    }
     this.calendar = calendarState(this.nowMinutes);
     if (this.calendar.dayIndex >= this.yearDays) {
       this.stats.fullYearCompleted = true;
@@ -425,6 +436,7 @@ export class SimulationEngine {
       stationTier: train.stops[originIndex]?.tier,
       calendarDemand: serviceCalendar.demandMultiplier,
     });
+    const velocity = this.bookingVelocity.get(train.routeId) || 0;
     const pricing = priceQuote({
       distanceKm,
       seatClass,
@@ -434,6 +446,7 @@ export class SimulationEngine {
       frequencyRank: train.frequencyRank || 0.5,
       noShowRisk: 0.025 + Math.min(0.04, load.loadFactor * 0.04),
       surgeMultiplier: serviceCalendar.priceSurgeMultiplier,
+      bookingVelocity: velocity,
     });
     const elapsedMs = performance.now() - started;
     return {
@@ -457,6 +470,8 @@ export class SimulationEngine {
   bookTrip({ trainId, originIndex, destinationIndex, seatClass = 'secondClass', passengerName = 'Passenger', preference = 'any', accessible = false, groupSize = 1, silent = false }) {
     const quote = this.computeQuote({ trainId, originIndex, destinationIndex, seatClass, groupSize, exactAvailability: !silent });
     const train = this.getTrain(trainId);
+    const currentVelocity = this.bookingVelocity.get(train.routeId) || 0;
+    this.bookingVelocity.set(train.routeId, currentVelocity + groupSize);
     if (!quote.canBook) {
       this.stats.rejectedBookings += 1;
       return { ok: false, reason: 'No seats available for the requested interval.', quote };

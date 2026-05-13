@@ -12,6 +12,7 @@ export function priceQuote({
   noShowRisk = 0.035,
   elasticity = -1.25,
   surgeMultiplier = 1,
+  bookingVelocity = 0,
 }) {
   const config = SEAT_CLASSES[seatClass];
   if (!config) throw new Error(`Unknown seat class: ${seatClass}`);
@@ -23,8 +24,9 @@ export function priceQuote({
   const frequencyRelief = 1 - Math.min(0.14, Math.max(0, frequencyRank) * 0.14);
   const noShowBuffer = 1 + Math.min(0.06, noShowRisk);
   const bidPrice = distanceKm * BASE_SECOND_CLASS_YUAN_PER_KM * Math.pow(Math.max(0.03, loadFactor), 1.8) * config.multiplier * 0.42;
-  const expectedDemandLift = Math.exp(elasticity * Math.log(Math.max(0.7, scarcity * timePressure)));
-  const raw = (baseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer * Math.max(0.8, surgeMultiplier);
+  const velocityMultiplier = 1 + Math.min(0.3, bookingVelocity * 0.05);
+  const expectedDemandLift = Math.exp(elasticity * Math.log(Math.max(0.7, scarcity * timePressure * velocityMultiplier)));
+  const raw = (baseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer * velocityMultiplier * Math.max(0.8, surgeMultiplier);
   return {
     price: roundToNearest(raw, 5),
     baseFare: roundToNearest(baseFare, 1),
@@ -36,6 +38,7 @@ export function priceQuote({
       peak: round(peak),
       frequencyRelief: round(frequencyRelief),
       noShowBuffer: round(noShowBuffer),
+      velocity: round(velocityMultiplier),
       surge: round(surgeMultiplier),
     },
     elasticity,
