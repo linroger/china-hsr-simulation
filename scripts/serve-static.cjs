@@ -81,7 +81,7 @@ const server = http.createServer((request, response) => {
 });
 
 function handleIngestBookings(request, response) {
-  let body = '';
+  const chunks = [];
   let bytes = 0;
   request.on('data', (chunk) => {
     bytes += chunk.length;
@@ -91,9 +91,10 @@ function handleIngestBookings(request, response) {
       response.end(JSON.stringify({ ok: false, reason: 'payload too large' }));
       return;
     }
-    body += chunk.toString('utf8');
+    chunks.push(chunk);
   });
   request.on('end', () => {
+    const body = Buffer.concat(chunks).toString('utf8');
     if (!body.trim()) {
       response.statusCode = 200;
       response.end(JSON.stringify({ ok: true, count: 0 }));
@@ -204,8 +205,8 @@ function runJsonExport(attempt) {
       env: attempt.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stdout = '';
-    let stderr = '';
+    const stdoutChunks = [];
+    const stderrChunks = [];
     let bytes = 0;
     child.stdout.on('data', (chunk) => {
       bytes += chunk.length;
@@ -214,10 +215,10 @@ function runJsonExport(attempt) {
         reject(new Error(`export exceeded ${OCEANBASE_EXPORT_MAX_BYTES} bytes`));
         return;
       }
-      stdout += chunk.toString('utf8');
+      stdoutChunks.push(chunk);
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
+      stderrChunks.push(chunk);
     });
     child.on('error', (error) => reject(error));
     child.on('close', (code) => {
