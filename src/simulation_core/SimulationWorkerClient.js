@@ -42,6 +42,8 @@ export class SimulationWorkerClient {
   terminate() {
     for (const { reject } of this.pending.values()) reject(new Error('Simulation worker terminated.'));
     this.pending.clear();
+    this.worker.onmessage = null;
+    this.worker.onerror = null;
     this.worker.terminate();
   }
 
