@@ -311,7 +311,9 @@ export class SimulationEngine {
     // Keep the train state machine monotonic. The UI and worker normally only
     // advance time, but this guard prevents any future replay/speed-control
     // path from making a running train move backward between two stations.
-    if (!wasScheduled && nextProgressKey + 1e-6 < previousProgressKey) return;
+    // Epsilon increased to 1e-4 to tolerate floating-point drift across many
+    // segment updates; 1e-6 was freezing trains after prolonged running.
+    if (!wasScheduled && nextProgressKey + 1e-4 < previousProgressKey) return;
 
     train.status = 'running';
     if (wasScheduled) this.processStation(train, 0);
@@ -382,6 +384,22 @@ export class SimulationEngine {
     });
   }
 
+  _ensureBookingIndexes(train) {
+    if (train._bookingIndexes) return train._bookingIndexes;
+    const byOrigin = new Map();
+    const byDestination = new Map();
+    for (const booking of train.bookings) {
+      const o = booking.originIndex;
+      const d = booking.destinationIndex;
+      if (!byOrigin.has(o)) byOrigin.set(o, []);
+      if (!byDestination.has(d)) byDestination.set(d, []);
+      byOrigin.get(o).push(booking);
+      byDestination.get(d).push(booking);
+    }
+    train._bookingIndexes = { byOrigin, byDestination };
+    return train._bookingIndexes;
+  }
+
   processStation(train, stationIndex) {
     if (train.processedStationIndexes.has(stationIndex)) return;
     train.processedStationIndexes.add(stationIndex);
@@ -389,9 +407,10 @@ export class SimulationEngine {
     let boarding = 0;
     let alighting = 0;
     let noShows = 0;
-    for (const booking of train.bookings) {
+    const indexes = this._ensureBookingIndexes(train);
+    for (const booking of (indexes.byOrigin.get(stationIndex) || [])) {
       const seatCount = booking.seats?.length || 1;
-      if (booking.originIndex === stationIndex && booking.status === 'confirmed') {
+      if (booking.status === 'confirmed') {
         // Determine no-show at departure time, not at booking time
         // Allow manual override (e.g. for tests) while keeping deferred evaluation as default.
         const willNoShow = booking.noShow || this.random(booking.ticketId, train.departureMinute, 'noShow') < noShowProbability(train, stationIndex, booking.seatClass);
@@ -406,7 +425,10 @@ export class SimulationEngine {
           boarding += seatCount;
         }
       }
-      if (booking.destinationIndex === stationIndex && booking.status === 'onboard') {
+    }
+    for (const booking of (indexes.byDestination.get(stationIndex) || [])) {
+      const seatCount = booking.seats?.length || 1;
+      if (booking.status === 'onboard') {
         booking.status = 'completed';
         alighting += seatCount;
       }
@@ -516,7 +538,10 @@ export class SimulationEngine {
       noShow: false,
     };
     train.bookings.push(booking);
-    if (train.bookings.length > 1500) train.bookings = train.bookings.slice(-1500);
+    if (train.bookings.length > 1500) {
+      train.bookings = train.bookings.slice(-1500);
+      train._bookingIndexes = null; // invalidated by cap
+    }
     this.bookings.push(booking);
     if (this.bookings.length > 400) this.bookings = this.bookings.slice(-400);
     this.stats.totalRevenue += booking.price;
@@ -572,6 +597,7 @@ export class SimulationEngine {
     const train = this.getTrain(booking.trainId);
     train.inventory.releaseTicket(ticketId);
     train.bookings = train.bookings.filter((item) => item.ticketId !== ticketId);
+    train._bookingIndexes = null; // invalidated by removal
     this.bookings = this.bookings.filter((item) => item.ticketId !== ticketId);
     booking.status = 'cancelled';
     this.recordLedgerEntry(booking, train);

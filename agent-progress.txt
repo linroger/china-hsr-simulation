@@ -134,3 +134,18 @@ Result: Passing. OceanBase runtime routes now follow validated station-to-statio
 Next steps:
 1. If more route-following issues are observed, add a route-audit overlay that draws a selected train's active variant/segment polyline for visual debugging.
 2. Keep the current Tencent CVM for app/API hosting only unless it is resized before installing OceanBase.
+
+2026-05-14T00:00:00Z | branch: main
+Feature/bug worked on: Performance, security, and operational realism improvements (Phases 1–6).
+Files touched: src/visualization/Dashboard.jsx, src/visualization/BookingPanel.jsx, src/simulation_core/SimulationWorkerClient.js, src/simulation_core/SimulationEngine.js, src/algorithms/pricing.js, src/visualization/HSRMap.jsx, scripts/serve-static.cjs, tests/engine.test.mjs.
+Summary:
+- Phase 1 (Frontend): Memoized topLoads and revenueSeries in Dashboard; removed snapshot.stats.totalBookings from BookingPanel quote deps to stop re-quoting on every network booking; added 30-second worker call timeout in SimulationWorkerClient to prevent UI hangs.
+- Phase 2 (Engine snapshot): Filter before serialize — only ~400–500 visible candidates instead of all 6000 trains; cached booking options by routeStopSequenceHash to avoid duplicating stop arrays thousands of times.
+- Phase 3 (Security/infra): Gzip static assets in serve-static.cjs; fixed XSS vulnerability in Mapbox popups via escapeHtml helper.
+- Phase 5 (Dynamic pricing): bookingVelocity Map per routeId, decays 10% every 12 ticks, feeds velocityBoost into priceQuote (max +4.5% surge).
+- Phase 6 (Deferred no-shows): No-show decisions moved from booking time to departure time in processStation() for realism. Manual booking.noShow override preserved so tests can still force no-shows deterministically.
+Tests run: `npm test` (25/25 passing); `npm run build` (passing); `./init.sh` (complete).
+Result: Passing. All 6 improvement phases implemented; deferred no-shows with test override verified.
+Next steps:
+1. Phase 4 (Pre-scheduled service days) is still skipped — requires larger refactor of advanceServiceDay() to build tomorrow's trains in background chunks.
+2. Review COMPREHENSIVE_BUG_AUDIT.md and PERFORMANCE_AUDIT.md for the next highest-impact items.
