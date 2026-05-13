@@ -754,6 +754,20 @@ OB_PASSWORD=... python3 scripts/oceanbase_seed.py
 python3 scripts/oceanbase_seed.py --skip-db --days 30 --workers 4
 ```
 
+Review the local `../12306.db` snapshot and emit OceanBase DDL without touching a live tenant:
+
+```bash
+npm run 12306:review
+```
+
+Load that snapshot into a reachable OceanBase MySQL-mode tenant:
+
+```bash
+OB_PASSWORD=... npm run 12306:migrate -- --create-database --truncate
+```
+
+The generated dry-run artifacts are written under `exports/12306-oceanbase/` and ignored by git. The full database review and Tencent CVM deployment path live in [docs/12306-db-review.md](./docs/12306-db-review.md) and [docs/tencent-cvm-oceanbase-runbook.md](./docs/tencent-cvm-oceanbase-runbook.md).
+
 ### Indexing strategy
 
 Every fact and dimension table carries explicit secondary indexes tuned for the queries that the dashboard and analyst notebooks actually execute:
