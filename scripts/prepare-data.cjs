@@ -1165,7 +1165,8 @@ function inferProvinceCity(stations) {
   for (const station of stations) {
     if (station.province && station.city) continue;
     let bestStation = null;
-    let bestKm = 100;
+    // Reduced from 100km to 30km to reduce chance of crossing provincial borders.
+    let bestKm = 30;
     const cx = Math.floor(station.lng / cellSize);
     const cy = Math.floor(station.lat / cellSize);
     for (let dx = -2; dx <= 2; dx += 1) {
