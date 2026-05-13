@@ -806,8 +806,9 @@ export function calendarState(nowMinutes = 0) {
   const day = date.getUTCDate();
   const dayOfWeek = date.getUTCDay();
   const weekend = dayOfWeek === 0 || dayOfWeek === 6;
-  const holiday = holidayWindow(month, day);
-  const peakSeason = peakSeasonWindow(month, day);
+  const year = date.getUTCFullYear();
+  const holiday = holidayWindow(month, day, year);
+  const peakSeason = peakSeasonWindow(month, day, year);
   const labelParts = [];
   let demandMultiplier = 1;
   let capacityMultiplier = 1;
@@ -849,8 +850,8 @@ export function calendarState(nowMinutes = 0) {
   };
 }
 
-function holidayWindow(month, day) {
-  const dayOfYear = monthDayToOrdinal(month, day);
+function holidayWindow(month, day, year = SERVICE_DAY_START_YEAR) {
+  const dayOfYear = monthDayToOrdinal(month, day, year);
   const windows = [
     { start: 1, end: 3, label: 'New Year travel surge', demand: 1.58, capacity: 1.34, price: 1.28 },
     { start: 14, end: 53, label: 'Spring Festival Chunyun', demand: 1.95, capacity: 1.52, price: 1.42 },
@@ -862,8 +863,8 @@ function holidayWindow(month, day) {
   return windows.find((window) => dayOfYear >= window.start && dayOfYear <= window.end);
 }
 
-function peakSeasonWindow(month, day) {
-  const dayOfYear = monthDayToOrdinal(month, day);
+function peakSeasonWindow(month, day, year = SERVICE_DAY_START_YEAR) {
+  const dayOfYear = monthDayToOrdinal(month, day, year);
   const seasons = [
     { start: 182, end: 243, label: 'Summer student travel peak', demand: 1.28, capacity: 1.16, price: 1.12 },
     { start: 354, end: 365, label: 'Year-end travel peak', demand: 1.2, capacity: 1.1, price: 1.08 },
@@ -871,9 +872,11 @@ function peakSeasonWindow(month, day) {
   return seasons.find((season) => dayOfYear >= season.start && dayOfYear <= season.end);
 }
 
-function monthDayToOrdinal(month, day) {
-  const monthStarts = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-  return monthStarts[month] + day;
+function monthDayToOrdinal(month, day, year = SERVICE_DAY_START_YEAR) {
+  // Leap-year-aware day-of-year via Date arithmetic instead of a hardcoded table.
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const startOfYear = new Date(Date.UTC(year, 0, 1));
+  return Math.floor((date - startOfYear) / 86400000) + 1;
 }
 
 function roundMultiplier(value) {
