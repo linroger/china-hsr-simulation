@@ -265,7 +265,8 @@ export class SimulationEngine {
 
   sellRealtimeDemand(requestCount = 6) {
     let sold = 0;
-    const bookable = this.trains.filter((train) => !train.completed && train.departureMinute > this.nowMinutes - 20);
+    // Only consider trains that have not yet departed for live demand bookings.
+    const bookable = this.trains.filter((train) => !train.completed && train.departureMinute > this.nowMinutes);
     if (!bookable.length) return sold;
     for (let i = 0; i < requestCount; i += 1) {
       const train = weightedTrainChoice(bookable, this.random('live', this.tickCounter, i));
