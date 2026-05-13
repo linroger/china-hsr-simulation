@@ -182,11 +182,15 @@ export default function HSRMap({ trains, events }) {
 
   useEffect(() => {
     if (!ready || !mapRef.current?.getSource('trains')) return;
-    const start = performance.now();
-    previousTrainsRef.current = currentTrainsRef.current.length ? currentTrainsRef.current : trains;
     targetTrainsRef.current = trains;
-    transitionRef.current = { started: start, duration: 190 };
-    if (!frameRef.current) frameRef.current = requestAnimationFrame(animateRef.current);
+    if (!frameRef.current) {
+      // Start a new transition only if none is currently running.
+      previousTrainsRef.current = currentTrainsRef.current.length ? currentTrainsRef.current : trains;
+      transitionRef.current = { started: performance.now(), duration: 190 };
+      frameRef.current = requestAnimationFrame(animateRef.current);
+    }
+    // If a transition is already in progress, it will naturally glide toward
+    // the updated targetTrainsRef without restarting from the current position.
   }, [ready, trains]);
 
   if (error === 'missing-token') {
