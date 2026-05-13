@@ -411,15 +411,24 @@ def build_station_lookup(source: dict[str, Any], static_context: dict[str, Any],
         station_meta_by_name.setdefault(row["station_name"], row)
 
     location_by_name: dict[str, dict[str, Any]] = {}
+    duplicate_warnings = 0
     for row in source["stationLocations"]:
         name = row.get("station_name")
-        if not name or name in location_by_name:
+        if not name:
             continue
         lon = as_float(row.get("lon"))
         lat = as_float(row.get("lat"))
         if lon is None or lat is None:
             continue
+        if name in location_by_name:
+            duplicate_warnings += 1
+            existing = location_by_name[name]
+            if haversine_km(existing, {"lng": lon, "lat": lat}) > 1:
+                print(f"[oceanbase:export] warning: duplicate station location for '{name}' with different coordinates ({existing['lng']},{existing['lat']}) vs ({lon},{lat}); keeping first", file=sys.stderr)
+            continue
         location_by_name[name] = {"lng": lon, "lat": lat}
+    if duplicate_warnings:
+        print(f"[oceanbase:export] note: {duplicate_warnings} duplicate station location rows found (first kept)", file=sys.stderr)
 
     names = set(station_meta_by_name) | set(location_by_name) | set(static_context["stationsByName"])
     result: dict[str, dict[str, Any]] = {}
