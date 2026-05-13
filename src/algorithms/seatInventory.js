@@ -182,20 +182,45 @@ export class SeatInventory {
 
     const pool = seatClass ? this.seatsByClass.get(seatClass) || [] : this.seats;
     const byCarRow = new Map();
+    const byCar = new Map();
     const fallback = [];
-    const rowCapacity = seatClass ? SEAT_CLASSES[seatClass]?.layout.length || 5 : 5;
     for (const seat of pool) {
       if (!this.isSeatAvailable(seat.id, originIndex, destinationIndex)) continue;
-      if (groupSize === 1) return [seat];
       fallback.push(seat);
-      const key = `${seat.car}-${seat.row}`;
-      if (!byCarRow.has(key)) byCarRow.set(key, []);
-      const seats = byCarRow.get(key);
-      seats.push(seat);
-      if (seats.length >= groupSize) return seats.slice(0, groupSize);
-      if (fallback.length >= groupSize && groupSize > rowCapacity) return fallback.slice(0, groupSize);
+      const rowKey = `${seat.car}-${seat.row}`;
+      if (!byCarRow.has(rowKey)) byCarRow.set(rowKey, []);
+      byCarRow.get(rowKey).push(seat);
+      if (!byCar.has(seat.car)) byCar.set(seat.car, []);
+      byCar.get(seat.car).push(seat);
     }
-    return fallback.length >= groupSize ? fallback.slice(0, groupSize) : null;
+
+    if (fallback.length < groupSize) return null;
+    if (groupSize === 1) return [fallback[0]];
+
+    // 1. Prefer a single row that fits the whole group.
+    for (const [, rowSeats] of byCarRow) {
+      if (rowSeats.length >= groupSize) return rowSeats.slice(0, groupSize);
+    }
+
+    // 2. For large groups, prefer complete rows within a single car.
+    for (const [, carSeats] of byCar) {
+      if (carSeats.length >= groupSize) {
+        const rowsInCar = new Map();
+        for (const seat of carSeats) {
+          const rowKey = `${seat.car}-${seat.row}`;
+          if (!rowsInCar.has(rowKey)) rowsInCar.set(rowKey, []);
+          rowsInCar.get(rowKey).push(seat);
+        }
+        const result = [];
+        for (const [, rowSeats] of rowsInCar) {
+          result.push(...rowSeats);
+          if (result.length >= groupSize) return result.slice(0, groupSize);
+        }
+      }
+    }
+
+    // 3. Last resort: scattered seats across cars.
+    return fallback.slice(0, groupSize);
   }
 
   releaseTicket(ticketId) {
