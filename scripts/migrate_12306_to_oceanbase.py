@@ -747,13 +747,12 @@ def load_oceanbase(
         with ob_conn.cursor() as cursor:
             for statement in ddl_statements:
                 cursor.execute(statement)
-        ob_conn.commit()
+        # DDL causes implicit commit in MySQL/OceanBase; data loading is all-or-nothing below.
 
         if truncate:
             with ob_conn.cursor() as cursor:
                 for source_table in reversed(TABLE_ORDER):
                     cursor.execute(f"TRUNCATE TABLE `{target_name(table_prefix, source_table)}`")
-            ob_conn.commit()
 
         loaded_counts: dict[str, int] = {}
         for source_table in TABLE_ORDER:
@@ -846,7 +845,6 @@ def load_one_table(
         values = [tuple(row[col] for col in columns) for row in batch]
         with ob_conn.cursor() as cursor:
             cursor.executemany(insert_sql, values)
-        ob_conn.commit()
         total += len(values)
     return total
 
