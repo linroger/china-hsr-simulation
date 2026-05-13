@@ -88,7 +88,7 @@ export default function BookingPanel({ snapshot, quoteTrip, bookTrip }) {
               setOriginIndex(next);
               setDestinationIndex(Math.max(next + 1, safeDestinationIndex));
             }}>
-              {selectedTrain?.stops.slice(0, -1).map((stop, index) => <option key={stop.name} value={index}>{index + 1}. {stop.name}</option>)}
+              {selectedTrain?.stops.slice(0, -1).map((stop, index) => <option key={`${stop.name}-${index}`} value={index}>{index + 1}. {stop.name}</option>)}
             </select>
           </div>
           <div>
@@ -96,7 +96,7 @@ export default function BookingPanel({ snapshot, quoteTrip, bookTrip }) {
             <select value={safeDestinationIndex} onChange={(event) => setDestinationIndex(Number(event.target.value))}>
               {selectedTrain?.stops.slice(originIndex + 1).map((stop, offset) => {
                 const index = originIndex + 1 + offset;
-                return <option key={stop.name} value={index}>{index + 1}. {stop.name}</option>;
+                return <option key={`${stop.name}-${index}`} value={index}>{index + 1}. {stop.name}</option>;
               })}
             </select>
           </div>
@@ -150,7 +150,7 @@ export default function BookingPanel({ snapshot, quoteTrip, bookTrip }) {
             </div>
             <div className="seat-strip">
               {(selectedTrain?.stops || []).map((stop, index) => (
-                <span key={stop.name} className={index >= originIndex && index < safeDestinationIndex ? 'held' : ''}>{stop.name}</span>
+                <span key={`${stop.name}-${index}`} className={index >= originIndex && index < safeDestinationIndex ? 'held' : ''}>{stop.name}</span>
               ))}
             </div>
           </>
