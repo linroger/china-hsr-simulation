@@ -44,7 +44,7 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
 
       <section className="control-strip">
         <label htmlFor="speed">Simulation speed</label>
-        <input id="speed" type="range" min="1" max="120" step="1" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} />
+        <input id="speed" type="range" min="1" max="480" step="1" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} />
         <strong>{speed}x</strong>
       </section>
 

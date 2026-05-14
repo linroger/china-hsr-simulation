@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-22%2F22%20passing-brightgreen)](#11-测试策略)
+[![Tests](https://img.shields.io/badge/tests-25%2F25%20passing-brightgreen)](#11-测试策略)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇺🇸 **[English README](./README.md)**
@@ -135,8 +135,8 @@ npm run serve          # http://127.0.0.1:5174/
 | **铁路图追踪区段(rail-traced)** | **82.8%** 通过 A\* 算法在铁路图上路径追踪生成 |
 | **铁路匹配总体** | **100.0%**(rail-traced + 走廊采样),0 条长距离直线退化段 |
 | **几何连续性** | 231,757 个坐标转换中 0 条长距离直连捷径,6,138 个段间边界全部连续 |
-| **快照推送频率** | 150 ms / 次,从 Worker → UI |
-| **测试通过率** | 22/22(座位库存、定价、引擎、单调推进、终点折返、失约、动态需求、换日滚动、OceanBase dry-run、线路契约、数据多样性、几何校验、OSM 补充、去重、订票流水、退票流水、导入 dry-run) |
+| **快照推送频率** | 100 ms (10 Hz),从 Worker → UI |
+| **测试通过率** | 25/25(座位库存、定价、引擎、单调推进、终点折返、失约、动态需求、换日滚动、OceanBase dry-run/导出、线路契约、数据多样性、几何校验、OSM 补充、去重、订票流水、退票流水、导入 dry-run、OceanBase 铁路路径几何) |
 
 ---
 
@@ -317,7 +317,7 @@ bidPrice@93%   >  bidPrice@15%
 | `bookTrip(...)` | 通过 `quoteTrip + inventory.allocate` 串行化读-改-写;若询价与提交之间座位日历改变,则回滚。 |
 | `snapshot()` | 构建 1,500 列上限的 `{ 在途 ∪ 临近发车 ∪ 刚到达 }` 快照,附带订票选项、网络汇总、统计数据。 |
 
-Worker 内 tick 频率为 **20 Hz**(50 ms),但向 UI 推快照为每 **150 ms** 一次 —— 这种**生产/消费速率解耦**让 Mapbox `setData` 调用始终落在 React 60 fps 预算内。
+Worker 内 tick 频率为 **20 Hz**(50 ms),采用自校正间隔测量实际流逝时间以防止回调堆积。向 UI 推快照为每 **100 ms** 一次 (10 Hz) —— 这种**生产/消费速率解耦**让 Mapbox `setData` 调用始终落在 React 60 fps 预算内,同时确保列车以精确仿真速度移动。
 
 #### 状态机
 
@@ -511,15 +511,16 @@ function seeded(key) {
 | 痛点 | 优化手段 |
 |---|---|
 | **UI 主线程饥饿** | 整个仿真迁移到 Web Worker(`simulationWorker.js`),React 只负责渲染和交互。 |
-| **Mapbox setData 抖动** | 快照限速 4 Hz;列车 GeoJSON 上限 700 个特征(在途 ∪ 临近 ∪ 刚到达);完成的列车从特征集合中剔除。 |
+| **Mapbox setData 抖动** | 快照 10 Hz 增量模式(仅发送变化列车);列车 GeoJSON 上限 1,500 个特征(在途 ∪ 临近 ∪ 刚到达);完成的列车从特征集合中剔除。 |
 | **Mapbox 样式复用** | 单实例 `mapbox-gl`,图层在 `'load'` 时一次加入,列车 source 通过 `getSource('trains').setData(...)` 增量更新,绝无整图重渲染。 |
-| **快照序列化** | `snapshot()` 只挑出 UI 所需字段,避免对 SeatInventory 整体 `JSON.stringify`。 |
+| **快照序列化** | `snapshot()` 只挑出 UI 所需字段;增量快照仅发送变化列车(200 列车负载下约减少 56%);缓存序列化停靠站、日历、订票与事件数组避免重复计算。 |
 | **OSM 数据负载** | 硬上限 8,000 个特征、82 万顶点;每条 LineString 自适应步长抽稀,确保 geojson 总体积 < 2.5 MB。 |
 | **CSV 解析** | 单遍流式、引号感知切分,无正则回溯。 |
 | **空间查询** | 0.35° 网格哈希(§5.4)把空间命中检索由 O(特征) 线性扫描降至**亚毫秒级**。 |
 | **询价时延** | UI 中暴露 `algorithmMs`,在 2024 款 MacBook 上典型为 **0.1–1 ms** 一次。 |
 | **测试套件** | 纯 ESM `node:test` 运行器,全套 < 1 秒完成。 |
-| **构建产物** | Vite + Rollup 把 Worker 代码切分为独立 chunk(`simulationWorker-*.js` 约 12 KB),不与主包绑死。 |
+| **增量快照** | Worker 仅发送自上次发布以来 `status`、`routeProgress`、`currentSegmentIndex` 或 `loadFactor` 发生变化的列车(200 列车负载下约减少 56%)。仅在 init、订票、手动刷新和日期边界时发送完整快照。 |
+| **构建产物** | Vite + Rollup 把 Worker 代码切分为独立 chunk(`simulationWorker-*.js` 约 40 KB),并懒加载 Dashboard/BookingPanel 分块。 |
 
 ---
 
@@ -539,8 +540,8 @@ new SimulationWorkerClient({ onSnapshot })
    │ ◄────postMessage({type:'response', id:1, ...})───
    │
    │ ──postMessage({id:2, type:'start'})───────────►   engine.start()
-   │                                                    setInterval(()=>postSnapshot(),250)
-   │ ◄────postMessage({type:'snapshot'})······ 每 250 ms
+   │                                                    setInterval(()=>postSnapshot(),100)
+   │ ◄────postMessage({type:'snapshot'})······ 每 100 ms
    │
    │ ──postMessage({id:3, type:'quoteTrip',...})──►    respond(engine.quoteTrip(...))
    │ ◄────postMessage({type:'response', id:3,...})
@@ -918,7 +919,7 @@ curl -s http://127.0.0.1:5174/ingest-bookings \
 基于 **Recharts**:
 
 - 9 格关键指标(营收、客流、在途/总车次、可视、在途均延、失约释放、仿真线程、座位定员、列车/线路)
-- 1×–120× 仿真倍速滑杆,直连 `worker.setSpeed`
+- 1×–480× 仿真倍速滑杆(默认 120×),直连 `worker.setSpeed` —— 最高速下 24 小时约 3 分钟跑完
 - *最高区段上座率*柱状图(前 18 列车)
 - *最近订票营收*单调折线图
 - *车站站台压力*双柱图(在途车次 × 客流)

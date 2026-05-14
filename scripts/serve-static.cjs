@@ -64,7 +64,7 @@ const server = http.createServer((request, response) => {
     ? requested
     : path.join(DIST, 'index.html');
 
-  response.setHeader('Cache-Control', filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=300');
+  response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   response.setHeader('Content-Type', contentType(filePath));
 
   const acceptEncoding = request.headers['accept-encoding'] || '';

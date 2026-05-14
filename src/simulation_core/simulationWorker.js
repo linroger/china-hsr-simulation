@@ -1,6 +1,6 @@
 import { SimulationEngine } from './SimulationEngine.js';
 
-const SNAPSHOT_INTERVAL_MS = 150;
+const SNAPSHOT_INTERVAL_MS = 100;
 const LEDGER_FLUSH_INTERVAL_MS = 4000;
 const LEDGER_BATCH_LIMIT = 800;
 
@@ -22,7 +22,7 @@ self.onmessage = (event) => {
       stopBackgroundPreload();
       stopLedgerFlush();
       engine = new SimulationEngine({ ...payload, preloadDemand: payload.preloadDemand ?? false });
-      engine.setSpeed(payload.speed || 60);
+      engine.setSpeed(payload.speed || 120);
       ledgerEndpoint = payload.ledgerEndpoint || null;
       initialized = true;
       lastPublishedServiceDayIndex = null;

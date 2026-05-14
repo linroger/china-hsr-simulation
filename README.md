@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-22%2F22%20passing-brightgreen)](#11-testing-strategy)
+[![Tests](https://img.shields.io/badge/tests-25%2F25%20passing-brightgreen)](#11-testing-strategy)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇨🇳 **[中文版 README](./README.zh-CN.md)**
@@ -137,7 +137,7 @@ npm run serve          # http://127.0.0.1:5174/
 | **OceanBase 12306 runtime routes** | 222 high-speed/EMU routes, 481 stations, 1,760 rail-graph edges, 5 rail-corridor edges, 0 ordered-stop straight fallbacks |
 | **Geometry continuity** | 0 segment-boundary discontinuities, 0 long direct shortcuts in 231,757 coordinate transitions |
 | **Snapshot interval** | 150 ms from worker → UI |
-| **Tests** | 25/25 passing (booking, pricing, engine, monotonic movement, terminal return trips, no-show, live demand, day rollover, OceanBase dry-run/export, route contracts, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run, OceanBase rail-path geometry) |
+| **Tests** | 25/25 passing (booking, pricing, engine, monotonic movement, terminal return trips, no-show, live demand, day rollover, OceanBase dry-run/export, route contracts, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run, OceanBase rail-path geometry, dynamic pricing monotonicity, seat reuse) |
 
 ---
 
@@ -318,7 +318,7 @@ bidPrice@93%   >  bidPrice@15%
 | `bookTrip(...)` | Serializable read-modify-write through `quoteTrip` + `inventory.allocate`; rolls back if the seat calendar shifted between quote and commit. |
 | `snapshot()` | Builds a 1,500-train cap of `{ active ∪ near-term ∪ recently-completed }`, plus booking-options list, network roll-up, and stats. |
 
-The tick frequency is **20 Hz** (50 ms) inside the worker, but snapshots ship to the UI every **150 ms** — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget.
+The tick frequency is **20 Hz** (50 ms) inside the worker, with a self-correcting interval that measures actual elapsed time to prevent callback pile-up. Snapshots ship to the UI every **100 ms** (10 Hz) — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget while ensuring trains move at the exact simulation speed.
 
 #### State machine
 
@@ -512,15 +512,16 @@ Given a fixed `seed`, every call resolves to the same value — making test runs
 | Concern | Optimization |
 |---|---|
 | **UI thread starvation** | The whole simulation moved to a Web Worker (`simulationWorker.js`). React only does paint + interaction. |
-| **Mapbox setData churn** | Snapshot ratelimited to 4 Hz; train GeoJSON capped at 700 visible features (active ∪ near-term ∪ recently-completed); completed trains drop out of the feature collection. |
+| **Mapbox setData churn** | Snapshots at 10 Hz with delta mode (only changed trains sent); train GeoJSON capped at 1,500 visible features (active ∪ near-term ∪ recently-completed); completed trains drop out of the feature collection. |
 | **Mapbox style reuse** | Single `mapbox-gl` instance across renders, layers added once on `'load'`, train source updated by `getSource('trains').setData(...)` — no full re-render. |
-| **Snapshot serialization** | `snapshot()` cherry-picks only fields needed by the UI (avoids `JSON.stringify`-ing the SeatInventory). |
+| **Snapshot serialization** | `snapshot()` cherry-picks only fields needed by the UI; delta snapshots send only changed trains (~56% reduction for 200-train workloads); cached serialized stops, calendar, bookings, and events arrays avoid recomputation. |
 | **OSM payload** | Hard caps: 8,000 features and 820,000 vertices total, with adaptive vertex stride per LineString to keep the geojson under 2.5 MB. |
 | **CSV parsing** | Single pass with quote-aware splitter, no regex backtracking. |
 | **Spatial query** | 0.35° grid hash index (§5.4) gives sub-millisecond lookups vs. linear O(features) scan. |
 | **Booking quote latency** | `algorithmMs` shown in UI: typically 0.1–1 ms per quote on a 2024 MacBook. |
 | **Test suite** | Pure ESM `node:test` runner — full suite < 1 s. |
-| **Build output** | Vite + Rollup code-splits the worker bundle (`simulationWorker-*.js` ~12 KB) from the main app. |
+| **Delta snapshots** | Worker sends only trains whose `status`, `routeProgress`, `currentSegmentIndex`, or `loadFactor` changed since last publish (~56% reduction for 200-train workloads). Full snapshots sent on init, booking, manual, and day-boundary only. |
+| **Build output** | Vite + Rollup code-splits the worker bundle (`simulationWorker-*.js` ~40 KB) and lazy-loads Dashboard/BookingPanel chunks from the main app. |
 
 ---
 
@@ -540,8 +541,8 @@ new SimulationWorkerClient({ onSnapshot })
    │ ◄────postMessage({type:'response', id:1, ...})───
    │
    │ ──postMessage({id:2, type:'start'})───────────►   engine.start()
-   │                                                    setInterval(()=>postSnapshot(),250)
-   │ ◄────postMessage({type:'snapshot'})······ every 250 ms
+   │                                                    setInterval(()=>postSnapshot(),100)
+   │ ◄────postMessage({type:'snapshot'})······ every 100 ms
    │
    │ ──postMessage({id:3, type:'quoteTrip',...})──►    respond(engine.quoteTrip(...))
    │ ◄────postMessage({type:'response', id:3,...})
@@ -968,7 +969,7 @@ A single click on a train opens a Mapbox `Popup` with `code`, current/next stati
 Built with **Recharts**:
 
 - 9-tile metric grid (revenue, passengers, active/total trains, visible-on-map, active avg delay, no-show releases, simulation thread, seat quota, trains/route)
-- Speed slider (1×–120×) wired to `worker.setSpeed`
+- Speed slider (1×–480×, default 120×) wired to `worker.setSpeed` — 24 hours covered in ~3 minutes at max speed
 - *Highest segment loads* bar chart (top 18 trains by load factor)
 - *Recent booking revenue* monotonic line chart
 - *Station platform pressure* dual bar chart (active trains × passengers)

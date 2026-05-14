@@ -11,7 +11,7 @@ export default function App() {
   const [yearlySummary, setYearlySummary] = useState(null);
   const [loading, setLoading] = useState('Loading generated railway database...');
   const [activeView, setActiveView] = useState('map');
-  const [speed, setSpeed] = useState(60);
+  const [speed, setSpeed] = useState(120);
   const [error, setError] = useState('');
   const [dataSource, setDataSource] = useState('');
 
@@ -206,16 +206,19 @@ function mergeSnapshot(previous, nextSnapshot) {
 
   // Delta merge: update changed trains, remove vanished ones, keep the rest.
   if (nextSnapshot.delta) {
-    const trainsById = new Map((previous.trains || []).map((t) => [t.id, t]));
+    const trainsById = Object.create(null);
+    for (const train of previous.trains || []) {
+      trainsById[train.id] = train;
+    }
     for (const train of nextSnapshot.trains) {
-      trainsById.set(train.id, train);
+      trainsById[train.id] = train;
     }
     for (const id of nextSnapshot.removedTrainIds || []) {
-      trainsById.delete(id);
+      delete trainsById[id];
     }
     return {
       ...nextSnapshot,
-      trains: [...trainsById.values()],
+      trains: Object.values(trainsById),
       bookingOptions: previous.bookingOptions.slice(),
     };
   }

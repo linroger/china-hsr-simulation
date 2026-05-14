@@ -193,7 +193,7 @@ export class SimulationEngine {
   }
 
   setSpeed(speed) {
-    this.speed = Math.max(1, Math.min(120, speed));
+    this.speed = Math.max(1, Math.min(480, speed));
   }
 
   loop() {

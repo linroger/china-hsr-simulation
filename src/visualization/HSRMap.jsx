@@ -12,7 +12,7 @@ export default function HSRMap({ trains, events }) {
   const currentTrainsRef = useRef([]);
   const previousTrainsRef = useRef([]);
   const targetTrainsRef = useRef([]);
-  const transitionRef = useRef({ started: 0, duration: 140 });
+  const transitionRef = useRef({ started: 0, duration: 100 });
   const frameRef = useRef(null);
   const lastRenderRef = useRef(0);
   const animateRef = useRef(null);
@@ -186,7 +186,7 @@ export default function HSRMap({ trains, events }) {
     if (!frameRef.current) {
       // Start a new transition only if none is currently running.
       previousTrainsRef.current = currentTrainsRef.current.length ? currentTrainsRef.current : trains;
-      transitionRef.current = { started: performance.now(), duration: 190 };
+      transitionRef.current = { started: performance.now(), duration: 100 };
       frameRef.current = requestAnimationFrame(animateRef.current);
     }
     // If a transition is already in progress, it will naturally glide toward
