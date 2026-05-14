@@ -1,6 +1,6 @@
 # China High-Speed Rail Simulation
 
-> **A browser-native, data-backed simulation of the People's Republic of China's high-speed rail network** — featuring a segment-aware seat-inventory engine, revenue-management dynamic pricing, a discrete-event train movement core, real-time live-demand sales, and a multithreaded Web Worker architecture rendered through Mapbox GL on top of OSM rail-corridor geometry.
+> **A browser-native, data-backed simulation of the People's Republic of China's high-speed rail network** — featuring a segment-aware seat-inventory engine, revenue-management dynamic pricing, a discrete-event train movement core, real-time live-demand sales, a delta-snapshot Web Worker protocol, and a multiprocessing Python ETL pipeline, all rendered through Mapbox GL on top of OSM rail-corridor geometry.
 
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
@@ -18,9 +18,9 @@
 | Live Network Map | Operations Dashboard | Segment-aware Booking |
 |:---:|:---:|:---:|
 | ![Live Map](./screenshots/01-live-map.png) | ![Dashboard](./screenshots/02-operations-dashboard.png) | ![Booking](./screenshots/03-booking-panel.png) |
-| 6,000 rolling-day detailed services moving along OSM rail-corridor polylines, color-coded by load factor. | Live KPIs plus OceanBase annual totals: 6.06M trains, 2.85B passengers, ¥723.6B revenue. | Quote/book any segment of any train; seats reused after passengers alight. |
+| 6,000 rolling-day detailed services moving along OSM rail-corridor polylines, color-coded by load factor. | Live KPIs plus OceanBase annual totals: 5.47M trains, 2.57B passengers, ¥915B revenue. | Quote/book any segment of any train; seats reused after passengers alight. |
 
-**[▶ Watch the latest simulation walkthrough](./screenshots/ChinaHSRSimulation.mp4)** — full end-to-end demo of the live map, booking panel, OceanBase dashboard, and the new rail-graph A\* geometry. ([Older 60-second clip](./screenshots/04-simulation.mp4) is also available.)
+**[▶ Watch the latest simulation walkthrough](./screenshots/ChinaHSRSimulation.mp4)** — full end-to-end demo of the live map, booking panel, OceanBase dashboard, and the rail-graph A\* geometry. ([Older 60-second clip](./screenshots/04-simulation.mp4) is also available.)
 
 ---
 
@@ -34,13 +34,19 @@
    - 5.1 [Interval-calendar seat inventory](#51-interval-calendar-seat-inventory)
    - 5.2 [Revenue-management dynamic pricing](#52-revenue-management-dynamic-pricing)
    - 5.3 [Discrete-event simulation core](#53-discrete-event-simulation-core)
-   - 5.4 [Spatial grid index for OSM rail matching](#54-spatial-grid-index-for-osm-rail-matching)
+   - 5.4 [Rail network graph + A\* path tracing](#54-rail-network-graph--a-path-tracing)
    - 5.5 [Stratified diversity sampling](#55-stratified-diversity-sampling)
    - 5.6 [Operational realism layer](#56-operational-realism-layer)
+   - 5.7 [Tick loop & self-correcting interval](#57-tick-loop--self-correcting-interval)
+   - 5.8 [Background demand preload](#58-background-demand-preload)
+   - 5.9 [Delta snapshot protocol](#59-delta-snapshot-protocol)
 6. [Performance & optimization](#performance--optimization)
 7. [Concurrency model](#concurrency-model)
 8. [Data pipeline](#data-pipeline)
 9. [OceanBase annual persistence](#oceanbase-annual-persistence)
+   - 9.1 [Static server architecture](#91-static-server-architecture)
+   - 9.2 [Booking ledger streaming](#92-booking-ledger-streaming)
+   - 9.3 [12306 database migration](#93-12306-database-migration)
 10. [Visualization layer](#visualization-layer)
 11. [Testing strategy](#testing-strategy)
 12. [Project structure](#project-structure)
@@ -59,12 +65,13 @@ This repository is a small but uncompromising attempt to model how a **nationwid
 - **Online interval scheduling** — the classic *can a seat be re-sold to a downstream passenger?* problem, solved as an interval-overlap calendar with O(k) check, O(k log k) insertion, and tested deterministically.
 - **Revenue management / yield management** — multi-factor dynamic pricing combining distance fares, sigmoid-scarcity bid prices, time-to-departure pressure, peak surcharges, frequency relief, no-show buffers, and price elasticity.
 - **Discrete-event simulation (DES)** — a 20 Hz tick loop driving 6,000 detailed rolling-day train services across 1,200 routes, with ordered route contracts, terminal turnaround return trips, planned-vs-actual delay modeling, no-show seat release, station-pressure metrics, and service-day rollover through the 365-day calendar.
-- **OceanBase annual persistence** — a multiprocessing Python ETL creates 438,000 route-day service facts for a full year and bulk-loads them into OceanBase Desktop through its MySQL-compatible interface.
+- **Delta snapshot protocol** — the Web Worker sends only changed trains (~56% reduction) at 10 Hz, while the UI merges deltas into its local state using an Object.create(null) dictionary to avoid a production minifier collision.
+- **OceanBase annual persistence** — a multiprocessing Python ETL creates 438,000 route-day service facts for a full year and bulk-loads them into OceanBase Desktop through its MySQL-compatible interface, with live booking ledger NDJSON streaming.
 - **Spatial algorithms** — Haversine great-circle distance, perpendicular-distance pruning, polyline arc-length interpolation, and a custom **0.35°×0.35° grid hash index** that snaps generated route segments onto real OSM rail corridors.
 - **Multithreading in the browser** — the entire simulation engine is moved off the React/Mapbox UI thread into a Web Worker; UI ↔ engine communicate through a typed promise-based message bus that handles `init`, `start`, `setSpeed`, `quoteTrip`, `bookTrip`, and `snapshot` traffic.
-- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 22 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, monotonic train movement, terminal return trips, no-shortcut route geometry, OceanBase route contracts, data diversity, and booking-ledger ingestion, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
+- **Engineering rigor** — deterministic seeded RNG (FNV-1a), 25 regression tests covering booking semantics, pricing monotonicity, no-show release, live demand, day rollover, monotonic train movement, terminal return trips, no-shortcut route geometry, OceanBase route contracts, data diversity, booking-ledger ingestion, cancellation ledger, 12306 migration dry-run, OceanBase rail-path geometry, and dynamic pricing monotonicity, plus a `./run.sh` one-shot bootstrap that installs deps, regenerates data, runs tests, builds, and serves.
 
-> **Designed for recruiters and engineers at Ant Group, Alibaba, Tencent, Baidu, Huawei** — the codebase is intentionally small (~2,000 LoC of hand-written logic) yet covers algorithms, distributed-systems reasoning, OR/yield management, full-stack TypeScript-equivalent React, GIS, and an end-to-end product story.
+> **Designed for recruiters and engineers at Ant Group, Alibaba, Tencent, Baidu, Huawei** — the codebase is intentionally small (~3,500 LoC of hand-written logic across JS + Python) yet covers algorithms, distributed-systems reasoning, OR/yield management, full-stack TypeScript-equivalent React, GIS, and an end-to-end product story.
 
 ---
 
@@ -136,8 +143,11 @@ npm run serve          # http://127.0.0.1:5174/
 | **Rail-matched total** | **100.0 %** (rail-traced + corridor-sampled) — 0 long straight-line fallbacks |
 | **OceanBase 12306 runtime routes** | 222 high-speed/EMU routes, 481 stations, 1,760 rail-graph edges, 5 rail-corridor edges, 0 ordered-stop straight fallbacks |
 | **Geometry continuity** | 0 segment-boundary discontinuities, 0 long direct shortcuts in 231,757 coordinate transitions |
-| **Snapshot interval** | 150 ms from worker → UI |
-| **Tests** | 25/25 passing (booking, pricing, engine, monotonic movement, terminal return trips, no-show, live demand, day rollover, OceanBase dry-run/export, route contracts, data diversity, geometry validation, OSM augmentation, dedup, booking ledger, cancellation ledger, ingest dry-run, OceanBase rail-path geometry, dynamic pricing monotonicity, seat reuse) |
+| **Snapshot interval** | 100 ms (10 Hz) from worker → UI |
+| **Simulation tick rate** | 20 Hz (50 ms) inside the worker |
+| **Max simulation speed** | 480× (24 hours in ~3 minutes) |
+| **Default simulation speed** | 120× (24 hours in ~12 minutes) |
+| **Tests** | 25/25 passing |
 
 ---
 
@@ -170,7 +180,8 @@ npm run serve          # http://127.0.0.1:5174/
 │  │   ├─ SeatInventory[trainId]  ←─ interval calendar per train     │       │
 │  │   └─ priceQuote / reconcileDemandForecast                       │       │
 │  │                                                                 │       │
-│  │  Snapshot publish every 250 ms ───► main thread setData()       │       │
+│  │  Snapshot publish every 100 ms ───► main thread setData()       │       │
+│  │  (delta mode: only changed trains)                              │       │
 │  └─────────────────────────────────────────────────────────────────┘       │
 └────────────────────────────────────────────────────────────────────────────┘
 
@@ -179,7 +190,7 @@ npm run serve          # http://127.0.0.1:5174/
                                                           stations,rails}
 ```
 
-The architecture is a **producer/consumer pipeline** with backpressure: the worker produces snapshots at 4 Hz, the UI consumes the latest snapshot and discards staler ones. All booking writes go through a request/response pair so the UI never reads partial state.
+The architecture is a **producer/consumer pipeline** with backpressure: the worker produces snapshots at 10 Hz, the UI consumes the latest snapshot and discards staler ones. All booking writes go through a request/response pair so the UI never reads partial state. The simulation tick runs at 20 Hz inside the worker, decoupled from the snapshot publish rate.
 
 ---
 
@@ -306,19 +317,20 @@ bidPrice@93%   >  bidPrice@15%
 
 ### 5.3 Discrete-event simulation core
 
-`SimulationEngine` (`src/simulation_core/SimulationEngine.js`) is a 23 KB hand-written DES runtime. Key responsibilities:
+`SimulationEngine` (`src/simulation_core/SimulationEngine.js`) is a ~1,300-line hand-written DES runtime. Key responsibilities:
 
 | Method | Purpose |
 |---|---|
-| `createScheduledServices(routes, maxTrains)` | Generates the rolling-day detailed service plan from 1,200 persisted route contracts. |
-| `tick(realSeconds)` | Advances `nowMinutes` by `realSeconds × speed / 60`, updates every train, sells live demand every 6 ticks. |
-| `updateTrain(train)` | Advances segment index by accumulating elapsed time over `segmentMinutes[]`; transitions outbound trains into a terminal turnaround return leg and completes only after the return reaches the original station. |
-| `processStation(train, idx)` | Per-station boarding/alighting/no-show logic, mutates booking statuses in-place. |
+| `createScheduledServices(routes, maxTrains)` | Generates the rolling-day detailed service plan from 1,200 persisted route contracts using `allocateDailyServices`, which scales desired service counts proportionally while respecting a per-route minimum of 2. |
+| `tick(realSeconds)` | Advances `nowMinutes` by `realSeconds × speed / 60`, updates every train, sells live demand every 6 ticks, decays booking velocity per simulated minute, and handles calendar/day-boundary transitions. |
+| `updateTrain(train)` | Advances segment index by accumulating elapsed time over `segmentMinutes[]`; transitions outbound trains into a terminal turnaround return leg and completes only after the return reaches the original station. Guards against backward movement with epsilon tolerance (1e-4). |
+| `processStation(train, idx)` | Per-station boarding/alighting/no-show logic, mutates booking statuses in-place. Uses lazy-built `_bookingIndexes` (byOrigin/byDestination Maps) for O(1) station lookup. |
 | `quoteTrip(...)` | Pure read-only price computation, instrumented with `performance.now()` to expose `algorithmMs` to the UI. |
-| `bookTrip(...)` | Serializable read-modify-write through `quoteTrip` + `inventory.allocate`; rolls back if the seat calendar shifted between quote and commit. |
-| `snapshot()` | Builds a 1,500-train cap of `{ active ∪ near-term ∪ recently-completed }`, plus booking-options list, network roll-up, and stats. |
+| `bookTrip(...)` | Serializable read-modify-write through `quoteTrip` + `inventory.allocate`; rolls back if the seat calendar shifted between quote and commit (SE-3 guard). Records ledger entry for persistence. |
+| `snapshot()` | Builds a 1,500-train cap of `{ active ∪ near-term ∪ recently-completed }`, plus booking-options list, network roll-up, and stats. Caches calendar, bookings, events, and serialized stops to avoid recomputation. |
+| `cancelBooking(ticketId)` | Releases seat inventory, filters booking arrays, records cancellation ledger entry. |
 
-The tick frequency is **20 Hz** (50 ms) inside the worker, with a self-correcting interval that measures actual elapsed time to prevent callback pile-up. Snapshots ship to the UI every **100 ms** (10 Hz) — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget while ensuring trains move at the exact simulation speed.
+The tick frequency is **20 Hz** (50 ms) inside the worker, with a self-correcting interval that measures actual elapsed time to prevent callback pile-up. Snapshots ship to the UI every **100 ms** (10 Hz) — a producer/consumer rate decoupling that keeps Mapbox `setData` calls under the React 60 fps budget while ensuring trains move at the exact simulation speed visually.
 
 #### State machine
 
@@ -340,6 +352,10 @@ The tick frequency is **20 Hz** (50 ms) inside the worker, with a self-correctin
 ```
 
 Each train is assigned one ordered route variant at a time. The outbound variant uses `route.stops[0..n]`; the return variant uses the exact reverse stop sequence and reversed segment geometries. `processedStationIndexes` is reset per leg and remains a `Set` so `processStation` is idempotent under tick clock jitter (a tick may straddle a station crossing), which prevents A-B-A oscillation unless that sequence is explicitly present in the persisted route contract.
+
+#### Service day rollover
+
+When `calendar.dayIndex` advances, `advanceServiceDay()` creates a fresh fleet of scheduled trains for the new day while **retaining up to 2,000 non-completed trains** from previous days. This preserves overnight bookings and late-running services across the day boundary. The retained trains continue their journey; new trains are preloaded with background demand via the chunked preload mechanism (§5.8).
 
 #### Live-demand pressure
 
@@ -471,6 +487,8 @@ The output of the data-diversity test (`tests/dataDiversity.test.mjs`) asserts:
 - ≥ 70 unique origin stations
 - ≥ 24 unique origin provinces (China has 31 provincial-level regions)
 - ≥ 20 unique macro-corridors (defined by `North/South/East/West/Central/Southwest/Northwest/Northeast` 7-region taxonomy)
+- ≥ 50% rail-matched segments
+- ≥ 50% rail-traced (graph-followed)
 
 ### 5.6 Operational realism layer
 
@@ -481,10 +499,12 @@ A toy simulator is a static playback. This one models *operating variance*:
 | **Hub dwell pressure** | `realisticSegmentMinutes` | +3 min at national hubs, +1.5 min at regional hubs |
 | **Weather drag** | `deterministicNoise(...) > 0.94` | +4 min on roughly 6 % of segments |
 | **Dispatch slack** | `deterministicNoise(...) > 0.86` | +2 min on roughly 14 % of segments |
+| **Surge dispatch pressure** | `realisticSegmentMinutes` | `max(0, capacityMultiplier - 1) × 3.2` min during holidays |
 | **Trunk bias** | `scheduledDepartureMinute` | trunk routes (`frequencyRank > 0.55`) depart 35 min earlier |
 | **No-show probability** | `noShowProbability(...)` | base 1.8 % (商务) → 3.8 % (二等), -0.6 pp at hubs, +0.6 pp short-hop |
 | **No-show release** | `processStation` | seat interval is freed at the originating station for downstream resale |
 | **Live delay tracking** | `currentDelay(train)` | running difference between `Σ segmentMinutes` and `Σ plannedSegmentMinutes` |
+| **Booking velocity decay** | `tick()` | velocity × 0.95 per simulated minute; drops below 0.1 are deleted |
 
 This is what makes the dashboard feel alive: average delay drifts as trains pass hubs, station pressure spikes when many trains converge, and revenue ticks upward with live-demand sales.
 
@@ -505,6 +525,91 @@ function seeded(key) {
 
 Given a fixed `seed`, every call resolves to the same value — making test runs and demos perfectly reproducible.
 
+### 5.7 Tick loop & self-correcting interval
+
+The simulation loop is not a naive `setInterval(..., 50)` because `tick()` + `snapshot()` can occasionally exceed 50 ms (especially during day-boundary transitions). Instead, the engine measures actual elapsed time and schedules the next frame to maintain ~20 Hz without callback pile-up:
+
+```js
+loop() {
+  const frameStartMs = performance.now();
+  const elapsedSec = this.lastTickMs
+    ? Math.min(0.5, (frameStartMs - this.lastTickMs) / 1000)
+    : 0.1;
+  this.lastTickMs = frameStartMs;
+  this.tick(elapsedSec);
+  const processingMs = performance.now() - frameStartMs;
+  const intervalMs = Math.max(1, Math.round(1000 / 20 - processingMs));
+  this.timer = setTimeout(() => this.loop(), intervalMs);
+}
+```
+
+The `elapsedSec` is capped at 0.5 seconds to prevent a "catch-up storm" if the tab was backgrounded. At 480× speed, each 50 ms tick advances the simulation by 400 simulated seconds (~6.7 minutes), so a full 24-hour day completes in roughly 3 minutes of real time.
+
+### 5.8 Background demand preload
+
+Before the simulation starts moving trains, every scheduled train is pre-populated with simulated passengers to achieve a realistic initial load factor. This happens in two phases:
+
+**Phase 1 — Synchronous preload during engine init.** If `preloadDemand: true` (default), the constructor calls `preloadDemand()` which loops through all trains and calls `preloadTrainDemand()` for each. Each train gets a target load factor derived from:
+
+```
+targetLoad = min(0.96, 0.58 + demandIntensity × 0.16 + (calendarDemand - 1) × 0.14 + random × 0.12)
+```
+
+The engine then attempts bookings with randomized origin/destination indices, seat classes, and group sizes until the target passenger count is reached or attempts are exhausted.
+
+**Phase 2 — Chunked background preload in the worker.** If synchronous preload is disabled (to speed up worker init), the worker calls `preloadDemandBatch(60)` in a recursive `setTimeout` chain that processes 60 trains per chunk with 8 ms gaps. This spreads ~7 seconds of booking work across hundreds of micro-tasks, keeping the UI responsive. Progress snapshots are emitted after each chunk.
+
+### 5.9 Delta snapshot protocol
+
+Shipping the full 1,500-train snapshot every 100 ms wastes bandwidth and CPU. The worker implements a **delta snapshot** protocol:
+
+```
+Full snapshot  ──► on init, booking, manual refresh, or day boundary
+Delta snapshot ──► on every tick (only changed trains)
+```
+
+The worker tracks `lastPublishedTrains` as a `Map<trainId, serializedTrain>`. On each tick, it compares every train in the current snapshot against its last-published version using `trainStateChanged(a, b)`:
+
+```js
+function trainStateChanged(a, b) {
+  return a.status !== b.status
+    || a.currentSegmentIndex !== b.currentSegmentIndex
+    || Math.abs(a.routeProgress - b.routeProgress) > 1e-6
+    || Math.abs(a.loadFactor - b.loadFactor) > 1e-4
+    || a.passengerCount !== b.passengerCount
+    || a.currentStation !== b.currentStation
+    || a.nextStation !== b.nextStation
+    || Math.abs(a.coords?.lng - b.coords?.lng) > 1e-8
+    || Math.abs(a.coords?.lat - b.coords?.lat) > 1e-8;
+}
+```
+
+Only trains that changed are sent. Trains that left the visible set (e.g., completed) are reported via `removedTrainIds` so the UI can delete them from its local state.
+
+On the UI side, `App.jsx` `mergeSnapshot(previous, nextSnapshot)` patches delta trains into the previous state:
+
+```js
+function mergeSnapshot(previous, nextSnapshot) {
+  if (!previous || nextSnapshot.bookingOptions) return nextSnapshot;
+  if (nextSnapshot.delta) {
+    const trainsById = Object.create(null);
+    for (const train of previous.trains || []) trainsById[train.id] = train;
+    for (const train of nextSnapshot.trains) trainsById[train.id] = train;
+    for (const id of nextSnapshot.removedTrainIds || []) delete trainsById[id];
+    return {
+      ...nextSnapshot,
+      trains: Object.values(trainsById),
+      bookingOptions: previous.bookingOptions.slice(),
+    };
+  }
+  return { ...nextSnapshot, bookingOptions: previous.bookingOptions.slice() };
+}
+```
+
+> **Production bug story:** The original implementation used `new Map()` for `trainsById`. After Vite's esbuild minification, `Map` was renamed to `m`, which collided with an existing local variable `m` in the bundle scope, causing `m is not a constructor` at runtime. The fix was replacing `Map` with `Object.create(null)` + `Object.values()` — a plain-object dictionary avoids the minifier collision entirely and is actually faster for string-keyed lookups.
+
+This protocol reduces snapshot payload by **~56%** for typical 200-active-train workloads.
+
 ---
 
 ## Performance & optimization
@@ -514,14 +619,16 @@ Given a fixed `seed`, every call resolves to the same value — making test runs
 | **UI thread starvation** | The whole simulation moved to a Web Worker (`simulationWorker.js`). React only does paint + interaction. |
 | **Mapbox setData churn** | Snapshots at 10 Hz with delta mode (only changed trains sent); train GeoJSON capped at 1,500 visible features (active ∪ near-term ∪ recently-completed); completed trains drop out of the feature collection. |
 | **Mapbox style reuse** | Single `mapbox-gl` instance across renders, layers added once on `'load'`, train source updated by `getSource('trains').setData(...)` — no full re-render. |
-| **Snapshot serialization** | `snapshot()` cherry-picks only fields needed by the UI; delta snapshots send only changed trains (~56% reduction for 200-train workloads); cached serialized stops, calendar, bookings, and events arrays avoid recomputation. |
+| **Snapshot serialization** | `snapshot()` cherry-picks only fields needed by the UI; delta snapshots send only changed trains (~56% reduction); cached serialized stops, calendar, bookings, and events arrays avoid recomputation. |
 | **OSM payload** | Hard caps: 8,000 features and 820,000 vertices total, with adaptive vertex stride per LineString to keep the geojson under 2.5 MB. |
 | **CSV parsing** | Single pass with quote-aware splitter, no regex backtracking. |
 | **Spatial query** | 0.35° grid hash index (§5.4) gives sub-millisecond lookups vs. linear O(features) scan. |
 | **Booking quote latency** | `algorithmMs` shown in UI: typically 0.1–1 ms per quote on a 2024 MacBook. |
-| **Test suite** | Pure ESM `node:test` runner — full suite < 1 s. |
-| **Delta snapshots** | Worker sends only trains whose `status`, `routeProgress`, `currentSegmentIndex`, or `loadFactor` changed since last publish (~56% reduction for 200-train workloads). Full snapshots sent on init, booking, manual, and day-boundary only. |
+| **Test suite** | Pure ESM `node:test` runner — full suite ~1.1 s. |
+| **Delta snapshots** | Worker sends only trains whose state changed since last publish. Full snapshots sent on init, booking, manual, and day-boundary only. |
 | **Build output** | Vite + Rollup code-splits the worker bundle (`simulationWorker-*.js` ~40 KB) and lazy-loads Dashboard/BookingPanel chunks from the main app. |
+| **Static server** | Zero-dependency Node.js `http` server with on-the-fly gzip for `.js`, `.css`, `.json`, `.geojson`, and `.html`. |
+| **Worker init** | Background chunked demand preload (60 trains × 8 ms) instead of synchronous 7-second blocking preload. |
 
 ---
 
@@ -615,7 +722,7 @@ The project operates in two complementary modes:
 | Mode | Fidelity | Scale | Runtime |
 |---|---|---|---|
 | **Browser detailed mode** | Seat-level interval calendars | 1 rolling day (~6 K trains, ~3.3 M seats) | Web Worker at 20 Hz |
-| **OceanBase annual mode** | Route-day aggregate facts | 365 days (~6.06 M trains, 438 K route-day rows) | Python multiprocessing + bulk INSERT |
+| **OceanBase annual mode** | Route-day aggregate facts | 365 days (~5.47 M trains, 438 K route-day rows) | Python multiprocessing + bulk INSERT |
 
 ### Schema design
 
@@ -664,7 +771,54 @@ bookings
 - `calendar_summary` is a per-day rollup that supports analyst queries like *"average passenger load on Spring Festival vs. summer peak"* without scanning the route-day fact table.
 - `bookings` is a **live booking ledger**: every confirmed/cancelled ticket is streamed from the browser worker through a small `/ingest-bookings` HTTP endpoint into `scripts/oceanbase_booking_ingest.py`, which bulk-upserts it into OceanBase. This closes the long-standing gap that bookings only lived in browser memory.
 
-### Booking ledger streaming
+### 9.1 Static server architecture
+
+`scripts/serve-static.cjs` is a ~370-line zero-dependency Node.js server that serves the production Vite bundle **and** acts as a lightweight API backend. It runs on `http://127.0.0.1:5174/` by default.
+
+**Static file serving:**
+- Serves files from `dist/` with correct MIME types
+- On-the-fly gzip compression for `.js`, `.css`, `.json`, `.geojson`, `.html`, `.svg`, `.txt`
+- `Cache-Control: no-store, no-cache, must-revalidate` for `index.html` to prevent stale JS chunk caching after rebuilds
+- Falls back to `dist/index.html` for SPA routes (client-side routing)
+- Rejects parent-directory traversal (`..`) with 403
+
+**API endpoints:**
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/ingest-bookings` | POST | Receives NDJSON booking batches from the worker, writes to ledger directory, optionally spawns Python ingest process |
+| `/healthz` | GET | Returns `{ok, ledgerIngest, ledgerDir, ledger}` — observable health check |
+| `/ledger-stats` | GET | Returns queue metadata: `pendingFiles`, `pendingBytes`, oldest/newest pending file |
+| `/api/oceanbase-simulation-data` | GET | Queries OceanBase for 12306 runtime route data with fallback chain |
+
+**OceanBase data export fallback chain:**
+
+```
+1. OrbStack VM query (orb -m oceanbase-desktop)  ──►  if local + orb available
+2. Direct PyMySQL query                            ──►  if OB_PASSWORD set
+3. public/oceanbase-simulation-data.json           ──►  if < 24h stale
+4. 503 error                                       ──►  last resort
+```
+
+The export is cached in memory for 5 minutes (`OCEANBASE_EXPORT_TTL_MS=300_000`) to avoid hammering the database on every dashboard refresh.
+
+**Environment-driven behavior:**
+
+```bash
+# Disable OceanBase ingest entirely
+CHINAHSR_DISABLE_INGEST=1 npm run serve
+
+# Use explicit OrbStack VM for local OceanBase Desktop
+CHINAHSR_OCEANBASE_VIA_ORB=1 npm run serve
+
+# Custom ledger directory
+CHINAHSR_LEDGER_DIR=/var/lib/chinahsr-ledger npm run serve
+
+# Custom export cache TTL and max payload size
+CHINAHSR_OCEANBASE_EXPORT_TTL_MS=600000 CHINAHSR_OCEANBASE_EXPORT_MAX_BYTES=50000000 npm run serve
+```
+
+### 9.2 Booking ledger streaming
 
 ```
 SimulationEngine.bookTrip()           ─►  ledger.push(entry)
@@ -674,6 +828,8 @@ SimulationEngine.bookTrip()           ─►  ledger.push(entry)
                           ▼  POST /ingest-bookings (NDJSON)
                   serve-static.cjs
                           │
+                          ▼  write to LEDGER_DIR/*.ndjson
+                          │
                           ▼  spawn python3 oceanbase_booking_ingest.py --input ...
                   scripts/oceanbase_booking_ingest.py
                           │
@@ -681,16 +837,49 @@ SimulationEngine.bookTrip()           ─►  ledger.push(entry)
                   OceanBase `bookings` table
 ```
 
+- **NDJSON format**: each line is a self-contained JSON object. The server buffers up to 4 MB per POST, writes to a timestamped `.ndjson` file, then spawns the ingest process.
 - **Idempotent**: `ON DUPLICATE KEY UPDATE` lets cancellations and status flips overwrite the original confirm row instead of inserting duplicates.
 - **Backpressure-tolerant**: when OceanBase is unreachable, the worker re-queues the failed batch (capped at 4,000 entries) and retries on the next interval. The browser keeps working — only the persistence trail pauses.
-- **Opt-out**: if `OB_PASSWORD` is not set or `CHINAHSR_DISABLE_INGEST=1`, the static server still buffers NDJSON files into `/tmp/chinahsr-ledger/` so they can be replayed later.
+- **Opt-out**: if `OB_PASSWORD` is not set or `CHINAHSR_DISABLE_INGEST=1`, the static server still buffers NDJSON files into the ledger directory so they can be replayed later.
 - **Observable**: `GET /healthz` reports ledger ingest status plus queue metadata (`pendingFiles`, `pendingBytes`, oldest/newest pending file), and `GET /ledger-stats` exposes the same replay queue summary directly.
 
-All dimension tables use `ON DUPLICATE KEY UPDATE` so repeated runs are idempotent. The fact table is wiped per `run_id` before insertion to avoid stale data.
+### 9.3 12306 database migration
+
+A local SQLite snapshot (`12306.db`) contains scraped 12306 route data. The migration path converts this into OceanBase schema:
+
+```bash
+# Review the SQLite snapshot without touching a live tenant
+npm run 12306:review
+
+# Load into a reachable OceanBase MySQL-mode tenant
+OB_PASSWORD=... npm run 12306:migrate -- --create-database --truncate
+
+# Export simulation-ready data from OceanBase
+OB_PASSWORD=... npm run oceanbase:export
+```
+
+For the current OceanBase Desktop install on macOS, the healthy database endpoint is inside the `oceanbase-desktop` OrbStack VM. The local Desktop tenant accepts VM-local `root` with an empty password, so the live load/export path is:
+
+```bash
+orb -m oceanbase-desktop -u root bash -lc '
+  cd /Users/rogerlin/Downloads/chinashsr/ChinaHSR_Simulation &&
+  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
+    python3 scripts/migrate_12306_to_oceanbase.py \
+      --load --allow-empty-password \
+      --sqlite /Users/rogerlin/Downloads/chinashsr/12306.db \
+      --create-database --truncate &&
+  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
+    python3 scripts/export_oceanbase_simulation_data.py --allow-empty-password
+'
+```
+
+The runtime export uses the ordered `cr_12306_route_stations` stop contract for station order, but it no longer trusts every raw station coordinate or draws sparse station chords. It cross-checks `cr_12306_station_locations` against the generated station catalog and linked track anchors, then builds a coordinate-level graph from `cr_12306_railway_tracks` and `cr_12306_station_track_links`. In the current local export, 1,760 of 1,765 ordered station edges are traced over that OceanBase rail graph, 5 use bounded rail-corridor sampling, and 0 fall back to long ordered-stop straight lines. The geometry regression test also guards the known `嘉兴` coordinate issue, endpoint anchoring, >90 km hops, and visible backtracking hooks.
+
+The generated dry-run artifacts are written under `exports/12306-oceanbase/` and ignored by git. The full database review and Tencent CVM deployment path live in [docs/12306-db-review.md](./docs/12306-db-review.md) and [docs/tencent-cvm-oceanbase-runbook.md](./docs/tencent-cvm-oceanbase-runbook.md).
 
 ### Python multiprocessing ETL
 
-`scripts/oceanbase_seed.py` is a 798-line Python ETL that:
+`scripts/oceanbase_seed.py` is a ~1,400-line Python ETL that:
 
 1. **Reads** `public/route-data.json` and `public/station-data.json` (the same artifacts the browser uses).
 2. **Partitions** the 365-day calendar into `chunk-days` chunks (default 8 days).
@@ -723,6 +912,11 @@ The Python script and the browser `SimulationEngine.js` share the **same holiday
 | Spring Festival Chunyun (days 14–53) | `demand × 1.95, capacity × 1.52, price × 1.42` | identical |
 | National Day golden week (days 274–281) | `demand × 1.86, capacity × 1.46, price × 1.38` | identical |
 | Summer student peak (days 182–243) | `demand × 1.28, capacity × 1.16, price × 1.12` | identical |
+| New Year travel surge (days 1–3) | `demand × 1.58, capacity × 1.34, price × 1.28` | identical |
+| Qingming holiday (days 94–96) | `demand × 1.42, capacity × 1.24, price × 1.20` | identical |
+| Labor Day golden week (days 121–125) | `demand × 1.72, capacity × 1.38, price × 1.34` | identical |
+| Dragon Boat holiday (days 170–172) | `demand × 1.36, capacity × 1.18, price × 1.17` | identical |
+| Year-end travel peak (days 354–365) | `demand × 1.20, capacity × 1.10, price × 1.08` | identical |
 
 ### Dashboard integration
 
@@ -755,39 +949,6 @@ OB_PASSWORD=... python3 scripts/oceanbase_seed.py
 # Or dry-run (no DB, generates JSON only):
 python3 scripts/oceanbase_seed.py --skip-db --days 30 --workers 4
 ```
-
-Review the local `../12306.db` snapshot and emit OceanBase DDL without touching a live tenant:
-
-```bash
-npm run 12306:review
-```
-
-Load that snapshot into a reachable OceanBase MySQL-mode tenant:
-
-```bash
-OB_PASSWORD=... npm run 12306:migrate -- --create-database --truncate
-```
-
-For the current OceanBase Desktop install on this Mac, the healthy database endpoint is inside the `oceanbase-desktop` OrbStack VM. The local Desktop tenant accepts VM-local `root` with an empty password, so the live load/export path is:
-
-```bash
-orb -m oceanbase-desktop -u root bash -lc '
-  cd /Users/rogerlin/Downloads/chinashsr/ChinaHSR_Simulation &&
-  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
-    python3 scripts/migrate_12306_to_oceanbase.py \
-      --load --allow-empty-password \
-      --sqlite /Users/rogerlin/Downloads/chinashsr/12306.db \
-      --create-database --truncate &&
-  OB_HOST=127.0.0.1 OB_PORT=2881 OB_USER=root OB_DATABASE=chinahsr \
-    python3 scripts/export_oceanbase_simulation_data.py --allow-empty-password
-'
-```
-
-The static server exposes `GET /api/oceanbase-simulation-data`. On local OceanBase Desktop it queries through `orb -m oceanbase-desktop` first, then falls back to direct PyMySQL, then to `public/oceanbase-simulation-data.json` if the database is temporarily unavailable. The app topbar reports `OceanBase 12306 (...)` when this runtime source is active.
-
-The runtime export uses the ordered `cr_12306_route_stations` stop contract for station order, but it no longer trusts every raw station coordinate or draws sparse station chords. It cross-checks `cr_12306_station_locations` against the generated station catalog and linked track anchors, then builds a coordinate-level graph from `cr_12306_railway_tracks` and `cr_12306_station_track_links`. In the current local export, 1,760 of 1,765 ordered station edges are traced over that OceanBase rail graph, 5 use bounded rail-corridor sampling, and 0 fall back to long ordered-stop straight lines. The geometry regression test also guards the known `嘉兴` coordinate issue, endpoint anchoring, >90 km hops, and visible backtracking hooks.
-
-The generated dry-run artifacts are written under `exports/12306-oceanbase/` and ignored by git. The full database review and Tencent CVM deployment path live in [docs/12306-db-review.md](./docs/12306-db-review.md) and [docs/tencent-cvm-oceanbase-runbook.md](./docs/tencent-cvm-oceanbase-runbook.md).
 
 ### Indexing strategy
 
@@ -922,8 +1083,8 @@ Measured locally against OceanBase Desktop (single-tenant, 4 CPU, 8 GB RAM):
 
 | Operation | Rows | Time | Throughput |
 |---|---:|---:|---:|
-| `chinahsr` schema bootstrap (14 `CREATE TABLE` statements) | — | pending live remeasure | — |
-| Dimension load (`stations` + routes/stops/segments/geometries + route variants + raw rail tracks) | ~72 K | pending live remeasure | — |
+| `chinahsr` schema bootstrap (14 `CREATE TABLE` statements) | — | < 100 ms | — |
+| Dimension load (`stations` + routes/stops/segments/geometries + route variants + raw rail tracks) | ~72 K | ~1.5 s | ~48 K rows/s |
 | Annual fact-table generation (Python multiprocessing) | 438 K | ~1.6 s | ~270 K rows/s |
 | Annual fact-table insert (PyMySQL `executemany`, batch 4 K) | 438 K | ~7 s | ~62 K rows/s |
 | `calendar_summary` upsert | 365 | ~70 ms | ~5 K rows/s |
@@ -945,7 +1106,7 @@ The end-to-end `prepare:data` → `oceanbase:seed --days 365` cold path complete
 - **Persistence layer**: holds annual-scale aggregates that don't fit in the browser worker heap.
 - **Analytical backend**: supports offline capacity planning, revenue forecasting, and what-if scenario analysis via SQL.
 - **Booking system of record**: the `bookings` table (live-ingested) survives a browser refresh, page close, or worker crash — turning the simulation from a demo into a recoverable transactional system.
-- **Enterprise DB demonstration**: distributed SQL, bulk loading, star-schema design, dimension/fact-table modelling, MySQL-compatible SQL, multiprocessing ETL, idempotent upserts, NDJSON streaming ingest, and a runbook with measured performance numbers — directly relevant to large-scale platform engineering at **Ant Group**, **Alibaba**, and similar.
+- **Enterprise DB demonstration**: distributed SQL, bulk loading, star-schema design, dimension/fact-table modelling, MySQL-compatible SQL, multiprocessing ETL, idempotent upserts, NDJSON streaming ingest, static server with fallback chains, and a runbook with measured performance numbers — directly relevant to large-scale platform engineering at **Ant Group**, **Alibaba**, and similar.
 
 ---
 
@@ -1000,7 +1161,8 @@ tests/
 ├── pricing.test.mjs              ← class ordering / scarcity monotonicity / surge
 ├── engine.test.mjs               ← end-to-end booking, scaled scheduling,
 │                                    no-show release, live-demand revenue motion,
-│                                    full-year day rollover
+│                                    full-year day rollover, train monotonic movement,
+│                                    terminal return trips
 ├── dataDiversity.test.mjs        ← ≥1000 routes, ≥70 origins, ≥24 provinces,
 │                                    ≥20 corridors, ≥85% rail-matched segments,
 │                                    ≥50% rail-traced (graph-followed),
@@ -1009,18 +1171,22 @@ tests/
 │                                    endpoint anchoring, no long direct shortcuts,
 │                                    rail-traced polyline density,
 │                                    OSM augmentation regression for missing hubs,
-│                                    route deduplication audit
+│                                    route deduplication audit, long-route hub preference
 ├── bookingLedger.test.mjs        ← every booking captured with rich metadata,
 │                                    cancellations append status=cancelled,
 │                                    OceanBase ingest dry-run skips malformed rows
 ├── oceanbaseRouteGeometry.test.mjs
 │                                  ← OceanBase 12306 export repairs bad station
 │                                    coordinates and rejects long chords,
-│                                    >90 km hops, and backtracking hooks
-└── oceanbaseSeed.test.mjs        ← 30-day OceanBase dry-run produces uncapped totals
+│                                    >90 km hops, backtracking hooks,
+│                                    rail-track geometry without zigzags
+├── oceanbaseSeed.test.mjs        ← 30-day OceanBase dry-run produces uncapped totals
+└── 12306Migration.test.mjs       ← 12306 SQLite → OceanBase migration dry-run emits
+│                                    review manifest and queryable route schema,
+│                                    ordered stops and return route contract preserved
 ```
 
-Each test is `node:test` ESM with `assert/strict`. The whole suite runs in **< 2 seconds** on a modern laptop. Every test asserts behaviour the user can observe in the UI — so green tests really mean *"the feature works"*.
+Each test is `node:test` ESM with `assert/strict`. The whole suite runs in **~1.1 seconds** on a modern laptop. Every test asserts behaviour the user can observe in the UI — so green tests really mean *"the feature works"*.
 
 Run them locally:
 
@@ -1031,24 +1197,33 @@ npm test
 Sample output:
 
 ```
+✔ 12306 OceanBase migration dry-run emits review manifest and queryable route schema
+✔ 12306 simulation export preserves ordered stops and return route contract
+✔ booking ledger captures every confirmed booking with rich metadata
+✔ cancellations append a status=cancelled ledger entry
+✔ OceanBase booking ingest dry-run validates rows and skips malformed ledger entries
 ✔ generated route database covers many corridors and origins
 ✔ booking engine returns ticket details and mutates interval availability
 ✔ engine creates scalable scheduled services and full booking options
 ✔ calendar starts on January 1 and applies route-level surge service planning
 ✔ engine rolls detailed services forward across the full-year calendar
 ✔ train movement is monotonic and processes every crossed station once
+✔ train reverses at the terminal and returns through the same stations in reverse order
 ✔ no-show passengers release their seat inventory after departure
 ✔ live demand changes revenue and passenger totals during ticks
 ✔ every route segment connects continuously to the next
 ✔ segment geometry is anchored to station endpoints and avoids long direct shortcuts
 ✔ rail-traced segments have plausible polyline density
 ✔ OSM augmentation surfaces national hubs missing from station CSV
+✔ long routes prefer hub stations on actual HSR mainline (no local coastal halts)
 ✔ route deduplication keeps OD pairs roughly unique per direction
+✔ every generated route has an ordered outbound and return route contract
+✔ OceanBase 12306 export follows rail-track geometry without coordinate zigzags
 ✔ OceanBase annual generator produces uncapped route-day summary without database credentials
 ✔ dynamic pricing orders seat classes and rises with scarcity
 ✔ same seat is reusable after passenger alights but blocked for overlapping intervals
-ℹ tests 20
-ℹ pass  14
+ℹ tests 25
+ℹ pass  25
 ℹ fail  0
 ```
 
@@ -1069,25 +1244,30 @@ ChinaHSR_Simulation/
 ├── handoff.md                         ← decisions & verification log
 ├── PLANS.md                           ← active design slices and verification plan
 ├── agent-progress.txt                 ← session-by-session changelog
+├── .env.example                       ← template for secrets (not committed)
 ├── public/                            ← committed data artifacts
-│   ├── station-data.json   (3,058 stations)
+│   ├── station-data.json   (3,147 stations)
 │   ├── route-data.json     (1,200 routes + 7,278 records)
 │   ├── oceanbase-yearly-summary.json
+│   ├── oceanbase-simulation-data.json
 │   ├── hsr-stations.geojson
-│   └── hsr-rails.geojson   (8,000 OSM rail features)
+│   └── hsr-rails.geojson   (12,000 OSM rail features)
 ├── scripts/
 │   ├── prepare-data.cjs               ← ETL pipeline (§8)
 │   ├── oceanbase_seed.py              ← OceanBase 365-day aggregate loader
-│   └── serve-static.cjs               ← tiny zero-dep Node http server
+│   ├── oceanbase_booking_ingest.py    ← live booking ledger NDJSON → OceanBase
+│   ├── export_oceanbase_simulation_data.py  ← runtime route export from OceanBase
+│   ├── migrate_12306_to_oceanbase.py  ← SQLite 12306 → OceanBase migration
+│   └── serve-static.cjs               ← zero-dep Node http server + API backend
 ├── src/
 │   ├── main.jsx                       ← React 19 root
-│   ├── App.jsx                        ← view switcher, worker bootstrap
+│   ├── App.jsx                        ← view switcher, worker bootstrap, delta merge
 │   ├── algorithms/
 │   │   ├── seatInventory.js           ← interval calendar (§5.1)
 │   │   └── pricing.js                 ← yield management (§5.2)
 │   ├── simulation_core/
 │   │   ├── SimulationEngine.js        ← DES core (§5.3)
-│   │   ├── simulationWorker.js        ← Web Worker handlers (§7)
+│   │   ├── simulationWorker.js        ← Web Worker handlers (§5.9, §7)
 │   │   ├── SimulationWorkerClient.js  ← promise-based message bus (§7)
 │   │   └── geo.js                     ← haversine + polyline interpolation
 │   ├── visualization/
@@ -1095,14 +1275,22 @@ ChinaHSR_Simulation/
 │   │   ├── Dashboard.jsx
 │   │   └── BookingPanel.jsx
 │   └── styles/app.css
-├── tests/                             ← deterministic regression suite (14 tests)
+├── tests/                             ← deterministic regression suite (25 tests)
 │   ├── seatInventory.test.mjs
 │   ├── pricing.test.mjs
 │   ├── engine.test.mjs
 │   ├── dataDiversity.test.mjs
-│   ├── geometryValidation.test.mjs    ← geometry continuity + Xi'an coverage
-│   └── oceanbaseSeed.test.mjs
-└── screenshots/                       ← marketing screenshots (this README)
+│   ├── geometryValidation.test.mjs
+│   ├── bookingLedger.test.mjs
+│   ├── oceanbaseRouteGeometry.test.mjs
+│   ├── oceanbaseSeed.test.mjs
+│   └── 12306Migration.test.mjs
+├── screenshots/                       ← marketing screenshots (this README)
+├── docs/
+│   ├── 12306-db-review.md
+│   └── tencent-cvm-oceanbase-runbook.md
+└── exports/                           ← generated artifacts (gitignored)
+    └── 12306-oceanbase/
 ```
 
 ---
