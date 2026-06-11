@@ -35,6 +35,10 @@ export class SimulationWorkerClient {
     return this.call('bookTrip', payload);
   }
 
+  injectScenario(scenarioType, params = {}) {
+    return this.call('injectScenario', { scenarioType, params });
+  }
+
   snapshot() {
     return this.call('snapshot');
   }

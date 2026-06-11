@@ -228,3 +228,20 @@ Remaining complex items for future sessions:
 1. GPU-driven train animation (Mapbox custom layer / deck.gl)
 2. Binary snapshot format (flat buffers / transferable ArrayBuffer)
 3. Background pre-scheduling of next-day trains to further smooth day boundaries
+
+2026-06-11T15:40:00Z | branch: main
+Feature/bug worked on: Optimization + realism + OceanBase integration repair pass (post-WIP cleanup).
+Files touched: src/simulation_core/SimulationEngine.js, src/simulation_core/simulationWorker.js, src/simulation_core/SimulationWorkerClient.js, src/algorithms/pricing.js, src/App.jsx, src/visualization/Dashboard.jsx, src/visualization/HSRMap.jsx, src/styles/app.css, scripts/serve-static.cjs, scripts/prepare-data.cjs, scripts/perf-probe.mjs (new), tests/engine.test.mjs, tests/scenarios.test.mjs (new), package.json, handoff.md.
+Summary:
+- Repaired 5 failing tests left by the uncommitted 2026-05-14 WIP: stale _bookingIndexes (bookTrip now maintains the index incrementally; prepareReturnLeg resets it), restored hsr-rails.geojson generation for the OceanBase rail_tracks pipeline, full train re-staging in movement tests.
+- Fixed OceanBase live export: three ReferenceErrors in serve-static.cjs (isLocalHost(host), stdout/stderr) plus missing --allow-empty-password on export AND ingest commands for local Desktop tenants. Live export verified end-to-end (222 routes/481 stations) and now self-refreshes public/oceanbase-simulation-data.json; stale prebuilt served with a header instead of 503; stranded ledger batches re-dispatched every 90s.
+- Fixed OOM: per-route minimum (6) overrode the 6,000-train budget at 1,800 routes (10,800 trains -> V8 heap crash). effectiveMinTrainsPerRoute() scales the floor to the budget.
+- Engine hot paths: delay propagation gated on >=3min growth (was full-train scan per delayed train at 20Hz) and now pushes scheduled departures back; weighted live-demand sampling via prefix sums + binary search (O(n+k log n)); calendarState cached per simulated minute; event log truncates in place with version counters (also fixed stale Recent Tickets cache).
+- Realism/dynamics: disruption scenarios apply one-time remaining-segment stretch (was unbounded per-tick delay compounding); seasonal deterministic auto-disturbances (thunderstorm/typhoon/snow/equipment); hour-of-day demand curve; ~8%/cycle live cancellations with 90% refunds + cancelled ledger rows; floating-fare off-peak discount (<=20%); injectScenario wired through worker protocol with dashboard buttons.
+- Frontend: delta merge no longer drops unchanged trains when bookingOptions refresh mid-delta; map transition duration matched to 200ms snapshot cadence; removed per-snapshot bookingOptions clone; removed dead code (selectVisibleTrains, networkSummary, increment, average).
+Tests run: npm test (30/30), npm run build (clean), npm run perf (6,000 trains; tick p50 0.41ms p95 6.55ms; snapshot p50 3.1ms), /api/oceanbase-simulation-data live + stale-fallback smokes, booking-ingest round trip.
+Result: Passing.
+Next steps:
+1. Consider lazy SeatInventory creation for far-future trains to cut worker memory further.
+2. GPU-driven train animation (Mapbox custom layer / deck.gl) remains open from the prior session.
+3. Surface scenario history (not just active) in the dashboard.

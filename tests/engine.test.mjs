@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { calendarState, SimulationEngine } from '../src/simulation_core/SimulationEngine.js';
+import { calendarState, effectiveMinTrainsPerRoute, SimulationEngine } from '../src/simulation_core/SimulationEngine.js';
+import { SeatInventory } from '../src/algorithms/seatInventory.js';
 
 const route = {
   id: 'r1',
@@ -22,6 +23,43 @@ const route = {
     { from: 'C', to: 'D', distanceKm: 100 },
   ],
 };
+
+/**
+ * Fully re-stage a train back to a pristine outbound scheduled state.
+ * The engine constructor runs tick(0), which can already advance or even
+ * complete early-departing services, so movement tests must reset every
+ * lifecycle field — not just status/progress — before driving the clock.
+ */
+function restageTrain(engine, trainId, segmentMinutes, { departureMinute = engine.nowMinutes, turnaroundMinutes = 1 } = {}) {
+  const train = engine.getTrain(trainId);
+  const baseRoute = train.baseRoute;
+  train.direction = 'outbound';
+  train.legIndex = 0;
+  train.routeVariantId = train.outboundVariantId;
+  train.origin = baseRoute.origin;
+  train.destination = baseRoute.destination;
+  train.originProvince = baseRoute.originProvince;
+  train.destinationProvince = baseRoute.destinationProvince;
+  train.stops = baseRoute.stops;
+  train._serializedStops = null;
+  train.segments = baseRoute.segments;
+  train.inventory = new SeatInventory(baseRoute.stops);
+  train.bookings = [];
+  train._bookingIndexes = null;
+  train.completedLegs = [];
+  train.departureMinute = departureMinute;
+  train.turnaroundDepartureMinute = null;
+  train.terminalTurnaroundMinutes = turnaroundMinutes;
+  train.segmentMinutes = segmentMinutes.slice();
+  train.plannedSegmentMinutes = segmentMinutes.slice();
+  train.delayMinutes = 0;
+  train.status = 'scheduled';
+  train.currentSegmentIndex = 0;
+  train.segmentProgress = 0;
+  train.processedStationIndexes = new Set();
+  train.completed = false;
+  return train;
+}
 
 test('booking engine returns ticket details and mutates interval availability', () => {
   const engine = new SimulationEngine({ routes: [route], seed: 1, preloadDemand: false });
@@ -54,11 +92,25 @@ test('engine creates scalable scheduled services and full booking options', () =
   const engine = new SimulationEngine({ routes, seed: 2, maxTrains: 30 });
   const snapshot = engine.snapshot();
 
-  assert.equal(engine.trains.length, 40);
-  assert.equal(snapshot.bookingOptions.length, 40);
-  assert.equal(snapshot.stats.minTrainsPerRoute, 2);
+  // The per-route service floor adapts to the budget: a tight budget over
+  // many routes degrades to the 2-train floor instead of overriding it.
+  const minPerRoute = effectiveMinTrainsPerRoute(routes.length, 30);
+  assert.equal(minPerRoute, 2);
+  assert.equal(engine.trains.length, routes.length * minPerRoute);
+  assert.equal(snapshot.bookingOptions.length, engine.trains.filter((train) => !train.completed).length);
+  assert.equal(snapshot.stats.minTrainsPerRoute, minPerRoute);
   assert.ok(snapshot.network.corridors.length >= 2);
-  assert.ok(snapshot.stats.averageDelayMinutes > 0);
+  assert.ok(engine.trains.some((train) => train.delayMinutes > 0), 'expected planned-vs-actual delay modeling on some trains');
+});
+
+test('per-route service floor respects the daily train budget', () => {
+  // Curated OceanBase route set keeps the full 6-train floor.
+  assert.equal(effectiveMinTrainsPerRoute(222, 6000), 6);
+  // The 1,800-route static fallback degrades to 2/route — 1,800 x 6 trains
+  // of 554-seat inventories previously exhausted the worker heap.
+  assert.equal(effectiveMinTrainsPerRoute(1800, 6000), 2);
+  assert.equal(effectiveMinTrainsPerRoute(20, 30), 2);
+  assert.equal(effectiveMinTrainsPerRoute(0, 6000), 6);
 });
 
 test('calendar starts on January 1 and applies route-level surge service planning', () => {
@@ -107,16 +159,8 @@ test('engine rolls detailed services forward across the full-year calendar', () 
 
 test('train movement is monotonic and processes every crossed station once', () => {
   const engine = new SimulationEngine({ routes: [route], seed: 44, maxTrains: 1, preloadDemand: false });
-  const train = engine.getTrain('r1');
   const departureMinute = engine.nowMinutes;
-  train.departureMinute = departureMinute;
-  train.segmentMinutes = [3, 3, 3];
-  train.plannedSegmentMinutes = [3, 3, 3];
-  train.terminalTurnaroundMinutes = 1;
-  train.status = 'scheduled';
-  train.currentSegmentIndex = 0;
-  train.segmentProgress = 0;
-  train.processedStationIndexes = new Set();
+  const train = restageTrain(engine, 'r1', [3, 3, 3], { departureMinute });
 
   let lastProgress = -1;
   let lastDirection = 'outbound';
@@ -148,16 +192,8 @@ test('train movement is monotonic and processes every crossed station once', () 
 
 test('train reverses at the terminal and returns through the same stations in reverse order', () => {
   const engine = new SimulationEngine({ routes: [route], seed: 45, maxTrains: 1, preloadDemand: false });
-  const train = engine.getTrain('r1');
   const departureMinute = engine.nowMinutes;
-  train.departureMinute = departureMinute;
-  train.segmentMinutes = [2, 2, 2];
-  train.plannedSegmentMinutes = [2, 2, 2];
-  train.terminalTurnaroundMinutes = 1;
-  train.status = 'scheduled';
-  train.currentSegmentIndex = 0;
-  train.segmentProgress = 0;
-  train.processedStationIndexes = new Set();
+  const train = restageTrain(engine, 'r1', [2, 2, 2], { departureMinute });
 
   engine.nowMinutes = departureMinute + 6;
   engine.updateTrain(train);
@@ -193,10 +229,7 @@ test('train reverses at the terminal and returns through the same stations in re
 
 test('no-show passengers release their seat inventory after departure', () => {
   const engine = new SimulationEngine({ routes: [route], seed: 3, maxTrains: 1 });
-  const train = engine.getTrain('r1');
-  train.departureMinute = engine.nowMinutes - 1;
-  train.status = 'scheduled';
-  train.processedStationIndexes = new Set();
+  const train = restageTrain(engine, 'r1', [3, 3, 3], { departureMinute: engine.nowMinutes - 1 });
 
   const response = engine.bookTrip({ trainId: 'r1', originIndex: 0, destinationIndex: 2, seatClass: 'secondClass', passengerName: 'No Show' });
   assert.equal(response.ok, true);

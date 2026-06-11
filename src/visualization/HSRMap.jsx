@@ -12,7 +12,9 @@ export default function HSRMap({ trains, events }) {
   const currentTrainsRef = useRef([]);
   const previousTrainsRef = useRef([]);
   const targetTrainsRef = useRef([]);
-  const transitionRef = useRef({ started: 0, duration: 100 });
+  // Transition duration matches the worker's 200 ms snapshot cadence so
+  // markers glide continuously instead of moving for 100 ms and idling.
+  const transitionRef = useRef({ started: 0, duration: 200 });
   const frameRef = useRef(null);
   const lastRenderRef = useRef(0);
   const animateRef = useRef(null);
@@ -44,63 +46,9 @@ export default function HSRMap({ trains, events }) {
     }
     map.addControl(new mapboxgl.NavigationControl({ showCompass: true }), 'bottom-right');
     map.on('load', () => {
-      map.addSource('rails', { type: 'geojson', data: '/hsr-rails.geojson' });
-      map.addLayer({
-        id: 'rails',
-        type: 'line',
-        source: 'rails',
-        paint: {
-          'line-color': ['interpolate', ['linear'], ['zoom'], 3, '#3b82f6', 9, '#06b6d4'],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.7, 8, 2.3, 12, 5],
-          'line-opacity': 0.58,
-        },
-      });
-      map.addSource('stations', { type: 'geojson', data: '/hsr-stations.geojson' });
-      map.addLayer({
-        id: 'local-station-dots',
-        type: 'circle',
-        source: 'stations',
-        filter: ['==', ['get', 'tier'], 'local'],
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 0.8, 7, 1.7, 11, 3],
-          'circle-color': '#64748b',
-          'circle-opacity': 0.48,
-          'circle-stroke-color': '#e2e8f0',
-          'circle-stroke-width': 0.25,
-        },
-      });
-      map.addLayer({
-        id: 'regional-station-squares',
-        type: 'symbol',
-        source: 'stations',
-        filter: ['==', ['get', 'tier'], 'regional-hub'],
-        layout: {
-          'text-field': '▪',
-          'text-size': ['interpolate', ['linear'], ['zoom'], 3, 8, 7, 12, 11, 17],
-          'text-allow-overlap': true,
-        },
-        paint: {
-          'text-color': '#06b6d4',
-          'text-halo-color': '#082f49',
-          'text-halo-width': 0.8,
-        },
-      });
-      map.addLayer({
-        id: 'national-station-diamonds',
-        type: 'symbol',
-        source: 'stations',
-        filter: ['==', ['get', 'tier'], 'national-hub'],
-        layout: {
-          'text-field': '◆',
-          'text-size': ['interpolate', ['linear'], ['zoom'], 3, 9, 7, 14, 11, 20],
-          'text-allow-overlap': true,
-        },
-        paint: {
-          'text-color': '#f59e0b',
-          'text-halo-color': '#451a03',
-          'text-halo-width': 1,
-        },
-      });
+      // The Mapbox style (e.g. ChinaHSR custom style) already includes rail
+      // and station layers, so we do NOT add custom GeoJSON sources for them.
+      // Only the dynamic train positions are rendered as a GeoJSON overlay.
       map.addSource('trains', { type: 'geojson', data: trainGeojson(trains) });
       map.addLayer({
         id: 'train-circles',
@@ -113,21 +61,45 @@ export default function HSRMap({ trains, events }) {
           'circle-stroke-color': '#ffffff',
         },
       });
+      // Heatmap layer showing passenger density
+      map.addLayer({
+        id: 'corridor-heat',
+        type: 'heatmap',
+        source: 'trains',
+        minzoom: 5,
+        paint: {
+          'heatmap-weight': ['interpolate', ['linear'], ['get', 'pax'], 0, 0, 100, 0.2, 400, 0.8],
+          'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 5, 0.15, 7, 0.5, 9, 1.0],
+          'heatmap-color': [
+            'interpolate', ['linear'], ['heatmap-density'],
+            0, 'rgba(0,0,0,0)',
+            0.1, 'rgba(59,130,246,0.2)',
+            0.3, 'rgba(6,182,212,0.4)',
+            0.6, 'rgba(245,158,11,0.5)',
+            1, 'rgba(239,68,68,0.6)',
+          ],
+          'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 5, 15, 7, 30, 9, 45],
+          'heatmap-opacity': 0.4,
+        },
+      });
       map.addLayer({
         id: 'train-labels',
         type: 'symbol',
         source: 'trains',
-        minzoom: 7.2,
+        minzoom: 5,
         layout: {
           'text-field': ['get', 'code'],
           'text-size': 10,
           'text-offset': [0, 1.7],
           'text-anchor': 'top',
+          // Dynamic label visibility based on zoom and load
+          'text-allow-overlap': ['step', ['zoom'], false, 9, true],
         },
         paint: {
           'text-color': '#e0f2fe',
           'text-halo-color': '#020617',
           'text-halo-width': 2,
+          'text-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0, 6.5, 0.6, 8, 1],
         },
       });
       function escapeHtml(str) {
@@ -165,7 +137,8 @@ export default function HSRMap({ trains, events }) {
       const eased = easeInOut(progress);
       const rendered = interpolateTrainSet(previousTrainsRef.current, targetTrainsRef.current, eased);
       currentTrainsRef.current = rendered;
-      if (timestamp - lastRenderRef.current >= 32 || progress >= 1) {
+      // Throttle to 100ms to match snapshot interval and reduce GPU upload churn
+      if (timestamp - lastRenderRef.current >= 100 || progress >= 1) {
         mapRef.current.getSource('trains').setData(trainGeojson(rendered));
         lastRenderRef.current = timestamp;
       }
@@ -186,7 +159,7 @@ export default function HSRMap({ trains, events }) {
     if (!frameRef.current) {
       // Start a new transition only if none is currently running.
       previousTrainsRef.current = currentTrainsRef.current.length ? currentTrainsRef.current : trains;
-      transitionRef.current = { started: performance.now(), duration: 100 };
+      transitionRef.current = { started: performance.now(), duration: 200 };
       frameRef.current = requestAnimationFrame(animateRef.current);
     }
     // If a transition is already in progress, it will naturally glide toward
@@ -227,9 +200,7 @@ npm run build && npm run serve</pre>
       <div ref={containerRef} className="mapbox-container" />
       <div className="map-legend">
         <b>Live algorithm map</b>
-        <span><i className="rail" /> OSM rail layer</span>
-        <span><i className="hub" /> National hub diamonds</span>
-        <span><i className="regional" /> Regional hub squares</span>
+        <span><i className="rail" /> Rail network (Mapbox style)</span>
         <span><i className="train-low" /> Low-load train</span>
         <span><i className="train-high" /> High-load train</span>
       </div>

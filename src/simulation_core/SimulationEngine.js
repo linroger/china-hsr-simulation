@@ -4,14 +4,29 @@ import { haversineKm, interpolateCoord, interpolateLine } from './geo.js';
 
 const DEFAULT_SPEED_KMH = 285;
 const DEFAULT_DAILY_TRAIN_BUDGET = 6000;
-const MIN_DAILY_TRAINS_PER_ROUTE = 2;
-const SNAPSHOT_TRAIN_LIMIT = 1500;
+export const MIN_DAILY_TRAINS_PER_ROUTE = 6;
+const MAX_DAILY_TRAINS_PER_ROUTE = 36;
+const SNAPSHOT_TRAIN_LIMIT = 800;
 const TRAIN_SEAT_QUOTA = 554;
 const SERVICE_YEAR_DAYS = 365;
 const TERMINAL_TURNAROUND_MINUTES = 18;
 const SERVICE_DAY_START_YEAR = 2026;
 const SERVICE_DAY_START_MONTH = 0;
 const SERVICE_DAY_START_DAY = 1;
+
+const STATION_CAPACITIES = {
+  '北京南': { platforms: 24, maxTrainsPerHour: 120 },
+  '上海虹桥': { platforms: 30, maxTrainsPerHour: 140 },
+  '广州南': { platforms: 28, maxTrainsPerHour: 130 },
+  '深圳北': { platforms: 20, maxTrainsPerHour: 100 },
+  '南京南': { platforms: 22, maxTrainsPerHour: 110 },
+  '杭州东': { platforms: 20, maxTrainsPerHour: 100 },
+  '武汉': { platforms: 18, maxTrainsPerHour: 90 },
+  '郑州东': { platforms: 20, maxTrainsPerHour: 100 },
+  '西安北': { platforms: 22, maxTrainsPerHour: 110 },
+  '成都东': { platforms: 18, maxTrainsPerHour: 90 },
+  '重庆北': { platforms: 16, maxTrainsPerHour: 80 },
+};
 
 export class SimulationEngine {
   constructor({ stations = [], routes = [], seed = 20260502, maxTrains = DEFAULT_DAILY_TRAIN_BUDGET, yearDays = SERVICE_YEAR_DAYS, preloadDemand = true } = {}) {
@@ -32,6 +47,14 @@ export class SimulationEngine {
     this.running = false;
     this.speed = 10;
     this.callbacks = { onUpdate: null };
+    this.delayGraph = buildDelayGraph(routes);
+    this.platformOccupancy = new Map();
+    this.activeScenarios = [];
+    this.scenarioCounter = 0;
+    this.autoDisturbances = true;
+    this._lastDisturbanceRollMinute = null;
+    this.eventsVersion = 0;
+    this.bookingsVersion = 0;
     this.preloadCursor = 0;
     const routeServiceStats = summarizeRouteServices(this.trains, this.routes);
     this.stats = {
@@ -157,14 +180,20 @@ export class SimulationEngine {
   preloadTrainDemand(train) {
     const demandIntensity = routeDemandIntensity(train);
     const calendarDemand = train.calendar?.demandMultiplier || this.calendar.demandMultiplier || 1;
-    const targetLoad = Math.min(0.96, 0.58 + demandIntensity * 0.16 + (calendarDemand - 1) * 0.14 + this.random(train.id, 'load') * 0.12);
+    // MINIMUM LOAD GUARANTEE: every train gets at least a 22% base target load
+    // so low-rank routes don't run completely empty.
+    const baseLoad = 0.58 + demandIntensity * 0.16 + (calendarDemand - 1) * 0.14;
+    const targetLoad = Math.min(0.96, Math.max(0.22, baseLoad + this.random(train.id, 'load') * 0.12));
     const targetPassengers = Math.round(TRAIN_SEAT_QUOTA * targetLoad);
-    const attempts = Math.max(42, Math.round(targetPassengers / 4.15));
+    // Ensure enough attempts even for low-demand trains (min 55 attempts)
+    const attempts = Math.max(55, Math.round(targetPassengers / 3.8));
     let bookedPassengers = 0;
     for (let i = 0; i < attempts && bookedPassengers < targetPassengers; i += 1) {
+      // Wider trip span for longer routes to fill more seats
+      const maxSpan = Math.min(8, train.stops.length - 1);
       const originIndex = Math.floor(this.random(train.id, i) * Math.max(1, train.stops.length - 2));
       const maxDest = train.stops.length - 1;
-      const destinationIndex = Math.min(maxDest, originIndex + 1 + Math.floor(this.random(train.id, i, 'd') * Math.min(5, maxDest - originIndex)));
+      const destinationIndex = Math.min(maxDest, originIndex + 1 + Math.floor(this.random(train.id, i, 'd') * Math.min(maxSpan, maxDest - originIndex)));
       const seatClass = weightedClass(this.random(train.id, i, 'c'));
       const remaining = Math.max(1, targetPassengers - bookedPassengers);
       const groupSize = Math.min(6, remaining, groupSizeFromRandom(this.random(train.id, i, 'g')));
@@ -223,7 +252,12 @@ export class SimulationEngine {
         else this.bookingVelocity.set(routeId, decayed);
       }
     }
-    this.calendar = calendarState(this.nowMinutes);
+    // calendarState builds Date objects and locale strings; at 20 Hz that is
+    // wasted work because the result only changes once per simulated minute.
+    if (currentMinute !== this._calendarCacheMinute) {
+      this._calendarCacheMinute = currentMinute;
+      this.calendar = calendarState(this.nowMinutes);
+    }
     if (this.calendar.dayIndex >= this.yearDays) {
       this.stats.fullYearCompleted = true;
       this.nowMinutes = this.yearDays * 1440 - 1;
@@ -243,11 +277,119 @@ export class SimulationEngine {
     if (this.calendar.dayIndex !== this.currentServiceDayIndex) {
       this.advanceServiceDay(this.calendar);
     }
-    for (const train of this.trains) this.updateTrain(train);
+    if (this.activeScenarios.length) {
+      // Demand scenarios lift the cached calendar multipliers (idempotent max).
+      for (const scenario of this.activeScenarios) {
+        if (scenario.type === 'demand' && this.nowMinutes < scenario.untilMinute) {
+          this.calendar.demandMultiplier = Math.max(this.calendar.demandMultiplier, scenario.demandMultiplier);
+          this.calendar.priceSurgeMultiplier = Math.max(this.calendar.priceSurgeMultiplier, scenario.priceSurgeMultiplier);
+        }
+      }
+      // Disruption scenarios slow each affected train exactly once; checking
+      // once per simulated minute (instead of 20x per real second) keeps this
+      // off the hot path and stops delays compounding without bound.
+      if (currentMinute !== previousMinute) this.applyDisruptionScenarios();
+      if (this.activeScenarios.some((scenario) => this.nowMinutes >= scenario.untilMinute)) {
+        for (const scenario of this.activeScenarios) {
+          if (this.nowMinutes >= scenario.untilMinute) {
+            this.logEvent('scenario', `${scenario.label} cleared after affecting ${scenario.appliedTrainIds?.size || 0} trains.`);
+          }
+        }
+        this.activeScenarios = this.activeScenarios.filter((scenario) => this.nowMinutes < scenario.untilMinute);
+      }
+    }
+    if (this.autoDisturbances && currentMinute !== previousMinute) {
+      this.maybeInjectAutoDisturbance(currentMinute);
+    }
+    for (const train of this.trains) {
+      if (train.completed) continue;
+      this.updateTrain(train);
+    }
     this.tickCounter += 1;
     if (realSeconds > 0 && this.tickCounter % 6 === 0) {
-      const requestCount = Math.round(14 * (this.calendar?.demandMultiplier || 1));
-      this.sellRealtimeDemand(requestCount);
+      const hourShape = hourlyDemandShape(this.calendar.minuteOfDay);
+      const requestCount = Math.round(14 * (this.calendar?.demandMultiplier || 1) * hourShape);
+      if (requestCount > 0) this.sellRealtimeDemand(requestCount);
+      this.maybeCancelBooking();
+    }
+  }
+
+  /**
+   * Live cancellation churn: a small share of confirmed bookings is returned
+   * before departure, releasing the held seat intervals for resale and
+   * writing a `cancelled` row to the OceanBase booking ledger.
+   */
+  maybeCancelBooking() {
+    if (!this.bookings.length) return;
+    if (this.random('cancel', this.tickCounter) > 0.08) return;
+    const index = Math.floor(this.random('cancel', this.tickCounter, 'idx') * this.bookings.length);
+    const booking = this.bookings[index];
+    if (!booking || booking.status !== 'confirmed') return;
+    const train = this.trainById.get(booking.trainId);
+    if (!train || train.completed || train.departureMinute <= this.nowMinutes) return;
+    this.cancelBooking(booking.ticketId);
+  }
+
+  /**
+   * Apply weather/infrastructure disruptions as a one-time slowdown per
+   * affected running train: remaining segments are stretched proportionally
+   * so the train visibly slows for the rest of its run, and the lost time is
+   * recorded in delayMinutes for cascade propagation and dashboards.
+   */
+  applyDisruptionScenarios() {
+    for (const scenario of this.activeScenarios) {
+      if (scenario.type === 'demand') continue;
+      if (this.nowMinutes >= scenario.untilMinute) continue;
+      for (const train of this.trains) {
+        if (train.status !== 'running' || train.completed) continue;
+        if (scenario.appliedTrainIds.has(train.id)) continue;
+        if (!scenarioAffectsTrain(scenario, train)) continue;
+        scenario.appliedTrainIds.add(train.id);
+        const severity = 0.6 + this.random(scenario.id, train.id, 'impact') * 0.8;
+        const stretch = scenario.delayMinutes * severity;
+        const firstUntouched = train.currentSegmentIndex + 1;
+        const remainingSegments = train.segmentMinutes.length - firstUntouched;
+        if (remainingSegments > 0) {
+          const perSegment = stretch / remainingSegments;
+          for (let i = firstUntouched; i < train.segmentMinutes.length; i += 1) {
+            train.segmentMinutes[i] += perSegment;
+          }
+        }
+        train.delayMinutes = (train.delayMinutes || 0) + stretch;
+      }
+    }
+  }
+
+  /**
+   * Seasonal stochastic disturbances make the network dynamic without user
+   * input: summer thunderstorms/typhoons, winter snow on northern corridors,
+   * and year-round equipment failures. Rolls are deterministic per 30-minute
+   * simulated slot so a given seed replays the same operational year.
+   */
+  maybeInjectAutoDisturbance(currentMinute) {
+    const slot = Math.floor(currentMinute / 30);
+    if (slot === this._lastDisturbanceRollMinute) return;
+    this._lastDisturbanceRollMinute = slot;
+    if (this.activeScenarios.length >= 3) return;
+    const month = Number((this.calendar.dateIso || '2026-01-01').slice(5, 7));
+    const hour = Math.floor((this.calendar.minuteOfDay || 0) / 60);
+    const roll = this.random('disturbance', slot);
+    const pick = this.random('disturbance', slot, 'which');
+
+    if (month >= 6 && month <= 8 && hour >= 12 && hour <= 20 && roll < 0.1) {
+      this.injectScenario('thunderstorm', { durationHours: 2 + Math.round(pick * 2), delayMinutes: 12 + Math.round(pick * 14), auto: true });
+      return;
+    }
+    if (month >= 7 && month <= 9 && roll < 0.02) {
+      this.injectScenario('typhoon', { durationHours: 6 + Math.round(pick * 6), delayMinutes: 30 + Math.round(pick * 30), auto: true });
+      return;
+    }
+    if ((month === 12 || month <= 2) && roll < 0.06) {
+      this.injectScenario('snow', { durationHours: 3 + Math.round(pick * 5), delayMinutes: 15 + Math.round(pick * 20), auto: true });
+      return;
+    }
+    if (roll < 0.025) {
+      this.injectScenario('equipment_failure', { durationHours: 1 + Math.round(pick * 2), delayMinutes: 10 + Math.round(pick * 20), auto: true });
     }
   }
 
@@ -270,6 +412,7 @@ export class SimulationEngine {
     this.stats.cumulativeTrainServices = (this.stats.cumulativeTrainServices || 0) + newTrains.length;
     Object.assign(this.stats, routeServiceStats);
     this.logEvent('calendar', `${calendar.dateLabel} ${calendar.dayName} service day opened with ${newTrains.length.toLocaleString()} new trains (${retained.length} retained from previous day).`);
+    this.platformOccupancy.clear();
     // Background preload will start automatically via ensureBackgroundPreload
     // in the worker. Synchronous preload here would freeze the UI for ~7s.
   }
@@ -279,12 +422,32 @@ export class SimulationEngine {
     // Only consider trains that have not yet departed for live demand bookings.
     const bookable = this.trains.filter((train) => !train.completed && train.departureMinute > this.nowMinutes);
     if (!bookable.length) return sold;
+    // Weight every candidate once per sales cycle (not once per request) and
+    // sample via prefix sums + binary search: O(n + k log n) instead of O(nk).
+    const prefix = new Float64Array(bookable.length);
+    let totalWeight = 0;
+    for (let i = 0; i < bookable.length; i += 1) {
+      totalWeight += trainDemandWeight(bookable[i]);
+      prefix[i] = totalWeight;
+    }
     for (let i = 0; i < requestCount; i += 1) {
-      const train = weightedTrainChoice(bookable, this.random('live', this.tickCounter, i));
+      // 15% chance of "exploration" — pick a random train to ensure
+      // low-frequency routes still get some live demand instead of
+      // being starved by the weighted choice algorithm.
+      let train;
+      const explorationRoll = this.random('live', this.tickCounter, i, 'explore');
+      if (explorationRoll < 0.15 && bookable.length > 1) {
+        const randomIndex = Math.floor(this.random('live', this.tickCounter, i, 'rand') * bookable.length);
+        train = bookable[randomIndex];
+      } else {
+        const target = this.random('live', this.tickCounter, i) * totalWeight;
+        train = bookable[prefixLowerBound(prefix, target)];
+      }
       const maxOrigin = Math.max(1, train.stops.length - 2);
       const originIndex = Math.min(maxOrigin, Math.floor(this.random(train.id, this.tickCounter, i, 'o') * maxOrigin));
       const maxDest = train.stops.length - 1;
-      const tripSpan = 1 + Math.floor(this.random(train.id, this.tickCounter, i, 'd') * Math.min(6, maxDest - originIndex));
+      const maxSpan = Math.min(8, maxDest - originIndex);
+      const tripSpan = 1 + Math.floor(this.random(train.id, this.tickCounter, i, 'd') * maxSpan);
       const destinationIndex = Math.min(maxDest, originIndex + tripSpan);
       const seatClass = weightedClass(this.random(train.id, this.tickCounter, i, 'c'));
       const groupSize = groupSizeFromRandom(this.random(train.id, this.tickCounter, i, 'g'));
@@ -328,6 +491,13 @@ export class SimulationEngine {
     if (!wasScheduled && nextProgressKey + 1e-4 < previousProgressKey) return;
 
     train.status = 'running';
+    // Cascade a delay only when it has materially grown since the last
+    // propagation. The previous per-tick propagation re-scanned every train
+    // 20 times a second and silently saturated downstream delays at the cap.
+    if (train.delayMinutes > 5 && train.delayMinutes - (train._lastPropagatedDelay || 0) >= 3) {
+      train._lastPropagatedDelay = train.delayMinutes;
+      this.propagateDelay(train, train.delayMinutes);
+    }
     if (wasScheduled) this.processStation(train, 0);
     for (const stationIndex of crossedStationIndexes) {
       if (stationIndex < train.stops.length) this.processStation(train, stationIndex);
@@ -374,6 +544,7 @@ export class SimulationEngine {
     train.segments = returnSegments;
     train.inventory = new SeatInventory(returnStops);
     train.bookings = [];
+    train._bookingIndexes = null; // outbound index is invalid for the return leg
     train.departureMinute = this.nowMinutes + train.terminalTurnaroundMinutes;
     train.turnaroundDepartureMinute = train.departureMinute;
     train.segmentMinutes = (train.segmentMinutes || []).slice().reverse();
@@ -421,6 +592,19 @@ export class SimulationEngine {
     if (train.processedStationIndexes.has(stationIndex)) return;
     train.processedStationIndexes.add(stationIndex);
     const station = train.stops[stationIndex]?.name;
+    const capacity = STATION_CAPACITIES[station];
+    if (capacity) {
+      const hourSlot = Math.floor(this.nowMinutes / 60);
+      const slotKey = `${station}@${hourSlot}`;
+      const current = this.platformOccupancy.get(slotKey) || 0;
+      if (current >= capacity.maxTrainsPerHour) {
+        const platformDelay = 3 + Math.floor(this.random(train.id, 'platform') * 5);
+        train.delayMinutes = (train.delayMinutes || 0) + platformDelay;
+        this.logEvent('delay', `${train.code} delayed ${platformDelay} min at ${station} due to platform congestion.`);
+      } else {
+        this.platformOccupancy.set(slotKey, current + 1);
+      }
+    }
     let boarding = 0;
     let alighting = 0;
     let noShows = 0;
@@ -480,6 +664,7 @@ export class SimulationEngine {
       calendarDemand: serviceCalendar.demandMultiplier,
     });
     const velocity = this.bookingVelocity.get(train.routeId) || 0;
+    const realBaseFare = resolveRealBaseFare(train, seatClass);
     const pricing = priceQuote({
       distanceKm,
       seatClass,
@@ -490,7 +675,9 @@ export class SimulationEngine {
       noShowRisk: 0.025 + Math.min(0.04, load.loadFactor * 0.04),
       surgeMultiplier: serviceCalendar.priceSurgeMultiplier,
       bookingVelocity: velocity,
+      baseFare: realBaseFare,
     });
+    const delayPrediction = this.predictDelayLikelihood(train);
     const elapsedMs = performance.now() - started;
     return {
       trainId,
@@ -508,6 +695,7 @@ export class SimulationEngine {
       calendar: serviceCalendar,
       algorithmMs: Math.round(elapsedMs * 1000) / 1000,
       departureMinute: train.departureMinute,
+      delayPrediction,
     };
   }
 
@@ -565,9 +753,18 @@ export class SimulationEngine {
     if (train.bookings.length > 1500) {
       train.bookings = train.bookings.slice(-1500);
       train._bookingIndexes = null; // invalidated by cap
+    } else if (train._bookingIndexes) {
+      // Keep the station-processing index in sync so bookings made after the
+      // index was first built still board/alight/no-show at their stations.
+      const { byOrigin, byDestination } = train._bookingIndexes;
+      if (!byOrigin.has(originIndex)) byOrigin.set(originIndex, []);
+      byOrigin.get(originIndex).push(booking);
+      if (!byDestination.has(destinationIndex)) byDestination.set(destinationIndex, []);
+      byDestination.get(destinationIndex).push(booking);
     }
     this.bookings.push(booking);
     if (this.bookings.length > 400) this.bookings = this.bookings.slice(-400);
+    this.bookingsVersion += 1;
     this.stats.totalRevenue += booking.price;
     this.stats.totalBookings += 1;
     this.stats.totalPassengers += groupSize;
@@ -630,6 +827,10 @@ export class SimulationEngine {
     train.bookings = train.bookings.filter((item) => item.ticketId !== ticketId);
     train._bookingIndexes = null; // invalidated by removal
     this.bookings = this.bookings.filter((item) => item.ticketId !== ticketId);
+    this.bookingsVersion += 1;
+    this.stats.cancelledBookings = (this.stats.cancelledBookings || 0) + 1;
+    // 12306 refunds retain a handling fee (5-20% by notice period); model 10%.
+    this.stats.totalRevenue = Math.max(0, this.stats.totalRevenue - booking.price * 0.9);
     booking.status = 'cancelled';
     this.recordLedgerEntry(booking, train);
     this.logEvent('release', `${booking.trainCode} released ${booking.seats.length} seat(s) after cancellation or alighting logic.`);
@@ -645,7 +846,10 @@ export class SimulationEngine {
   logEvent(type, message) {
     const id = `${Date.now()}-${(this.eventCounter = (this.eventCounter || 0) + 1)}`;
     this.events.unshift({ id, type, message, minute: Math.round(this.nowMinutes) });
-    this.events = this.events.slice(0, 80);
+    // Truncate in place (amortized) instead of cloning an 80-element array on
+    // every event — station stops alone produce ~85k events per simulated day.
+    if (this.events.length > 120) this.events.length = 80;
+    this.eventsVersion += 1;
   }
 
   snapshot({ includeBookingOptions = true } = {}) {
@@ -681,6 +885,32 @@ export class SimulationEngine {
       bookingOptions = this.bookingOptions;
     }
 
+    // Cache network summary: only recompute every 5 snapshots since it changes slowly
+    if (!this._networkCacheTick || this.tickCounter - this._networkCacheTick >= 5) {
+      this._networkCache = networkSummaryFromTrains(this.trains, this.nowMinutes);
+      this._networkCacheTick = this.tickCounter;
+    }
+
+    // Compute active delay stats only from the already-filtered active list
+    let activeDelaySum = 0;
+    let activeDelayedCount = 0;
+    for (const candidate of active) {
+      const d = currentDelay(candidate.raw);
+      activeDelaySum += d;
+      if (d >= 3) activeDelayedCount += 1;
+    }
+
+    // Version counters instead of reference identity: pushes mutate the
+    // arrays in place, so reference checks missed most updates.
+    if (this.bookingsVersion !== this._lastBookingsVersion) {
+      this._lastBookingsVersion = this.bookingsVersion;
+      this._cachedBookings = this.bookings.slice(-12).reverse();
+    }
+    if (this.eventsVersion !== this._lastEventsVersion) {
+      this._lastEventsVersion = this.eventsVersion;
+      this._cachedEvents = this.events.slice();
+    }
+
     return {
       nowMinutes: Math.round(this.nowMinutes),
       calendar,
@@ -701,52 +931,19 @@ export class SimulationEngine {
         scheduledTrains: scheduled.length,
         completedTrains: completed.length,
         visibleTrainCount: visibleTrains.length,
-        averageDelayMinutes: (() => {
-          let sum = 0;
-          for (const train of this.trains) sum += train.delayMinutes || 0;
-          return this.trains.length ? Math.round((sum / this.trains.length) * 10) / 10 : 0;
-        })(),
-        delayedTrains: (() => {
-          let count = 0;
-          for (const train of this.trains) if ((train.delayMinutes || 0) >= 5) count += 1;
-          return count;
-        })(),
-        activeAverageDelayMinutes: (() => {
-          let sum = 0;
-          let count = 0;
-          for (const train of this.trains) {
-            if (train.status === 'running') {
-              sum += currentDelay(train);
-              count += 1;
-            }
-          }
-          return count ? Math.round((sum / count) * 10) / 10 : 0;
-        })(),
-        activeDelayedTrains: (() => {
-          let count = 0;
-          for (const train of this.trains) {
-            if (train.status === 'running' && currentDelay(train) >= 3) count += 1;
-          }
-          return count;
-        })(),
+        activeAverageDelayMinutes: active.length ? Math.round((activeDelaySum / active.length) * 10) / 10 : 0,
+        activeDelayedTrains: activeDelayedCount,
+        activeScenarios: this.activeScenarios.map(s => ({
+          type: s.type,
+          label: s.label,
+          remainingMinutes: Math.max(0, Math.round(s.untilMinute - this.nowMinutes)),
+        })),
       },
-      bookings: (() => {
-        if (this.bookings !== this._lastBookingsRef) {
-          this._lastBookingsRef = this.bookings;
-          this._cachedBookings = this.bookings.slice(-12).reverse();
-        }
-        return this._cachedBookings;
-      })(),
-      events: (() => {
-        if (this.events !== this._lastEventsRef) {
-          this._lastEventsRef = this.events;
-          this._cachedEvents = this.events.slice();
-        }
-        return this._cachedEvents;
-      })(),
+      bookings: this._cachedBookings,
+      events: this._cachedEvents,
       trains: visibleTrains,
       bookingOptions,
-      network: networkSummaryFromTrains(this.trains, this.nowMinutes),
+      network: this._networkCache,
     };
   }
 
@@ -793,35 +990,180 @@ export class SimulationEngine {
         };
       });
   }
+
+  propagateDelay(sourceTrain, delayMinutes) {
+    const fraction = Math.min(0.5, delayMinutes / 60);
+    const sourceDeparture = sourceTrain.departureMinute;
+    const connectedRoutes = this.delayGraph.get(sourceTrain.routeId) || [];
+    for (const train of this.trains) {
+      if (train.id === sourceTrain.id) continue;
+      if (train.status !== 'scheduled') continue;
+      const departsWithinWindow = train.departureMinute > sourceDeparture && train.departureMinute <= sourceDeparture + 120;
+      if (!departsWithinWindow) continue;
+      const sameRoute = train.routeId === sourceTrain.routeId;
+      const connectedRoute = connectedRoutes.some((c) => c.routeId === train.routeId);
+      const sharesDestination = train.destination === sourceTrain.destination;
+      if (sameRoute || connectedRoute || sharesDestination) {
+        const headroom = 45 - (train.delayMinutes || 0);
+        if (headroom <= 0) continue;
+        const addedDelay = Math.min(headroom, Math.max(1, Math.round(fraction * delayMinutes)));
+        train.delayMinutes = (train.delayMinutes || 0) + addedDelay;
+        // A knock-on delay holds the connecting service at the platform —
+        // push the actual departure back, not just the reporting metric.
+        train.departureMinute += addedDelay;
+      }
+    }
+  }
+
+  injectScenario(type, params = {}) {
+    const catalog = {
+      thunderstorm: { kind: 'weather', label: 'Thunderstorm', delayMinutes: 20, durationHours: 3, corridorFilter: null },
+      typhoon: { kind: 'weather', label: 'Typhoon landfall', delayMinutes: 45, durationHours: 8, corridorFilter: /South|East China|Southeast/i },
+      snow: { kind: 'weather', label: 'Snow and ice', delayMinutes: 25, durationHours: 5, corridorFilter: /North|Northeast|Northwest/i },
+      high_wind: { kind: 'weather', label: 'High wind alert', delayMinutes: 12, durationHours: 2, corridorFilter: null },
+      track_closure: { kind: 'infrastructure', label: 'Track closure', delayMinutes: 30, durationHours: 6 },
+      equipment_failure: { kind: 'infrastructure', label: 'Equipment failure', delayMinutes: 18, durationHours: 2 },
+      surge_demand: { kind: 'demand', label: 'Demand surge' },
+    };
+    const spec = catalog[type];
+    if (!spec) return null;
+    this.scenarioCounter += 1;
+    const id = `scenario-${this.scenarioCounter}`;
+    const durationHours = params.durationHours || spec.durationHours || 3;
+    const untilMinute = this.nowMinutes + durationHours * 60;
+
+    if (spec.kind === 'demand') {
+      const scenario = {
+        id,
+        type: 'demand',
+        label: spec.label,
+        auto: Boolean(params.auto),
+        demandMultiplier: params.surge || 1.5,
+        priceSurgeMultiplier: params.priceSurge || 1.3,
+        untilMinute,
+      };
+      this.activeScenarios.push(scenario);
+      this.logEvent('scenario', `${spec.label}: +${Math.round(((params.surge || 1.5) - 1) * 100)}% demand for ${durationHours}h.`);
+      return scenario;
+    }
+
+    const scenario = {
+      id,
+      type: spec.kind,
+      label: spec.label,
+      auto: Boolean(params.auto),
+      delayMinutes: params.delayMinutes || spec.delayMinutes,
+      speedReduction: params.speedReduction || 0.7,
+      untilMinute,
+      appliedTrainIds: new Set(),
+    };
+    if (spec.kind === 'weather') {
+      const corridors = params.corridors?.length
+        ? params.corridors
+        : this.pickCorridors(spec.corridorFilter, 2, id);
+      scenario.affectedCorridors = new Set(corridors);
+      this.logEvent('scenario', `${spec.label} over ${corridors.join(', ') || 'network'} for ${durationHours}h (+~${scenario.delayMinutes} min en route).`);
+    } else {
+      const routeIds = params.routeIds?.length ? params.routeIds : this.pickRouteCluster(id);
+      scenario.affectedRouteIds = new Set(routeIds);
+      this.logEvent('scenario', `${spec.label} affecting ${routeIds.length} route(s) for ${durationHours}h (+~${scenario.delayMinutes} min en route).`);
+    }
+    this.activeScenarios.push(scenario);
+    return scenario;
+  }
+
+  pickCorridors(filter, count, saltKey = 'corridor-pick') {
+    if (!this._corridorNames) {
+      this._corridorNames = [...new Set(this.routes.map((route) => route.corridor || 'Unknown'))];
+    }
+    const matching = filter ? this._corridorNames.filter((name) => filter.test(name)) : this._corridorNames;
+    const pool = matching.length ? matching : this._corridorNames;
+    if (!pool.length) return [];
+    const picked = new Set();
+    for (let i = 0; i < count * 3 && picked.size < Math.min(count, pool.length); i += 1) {
+      picked.add(pool[Math.floor(this.random(saltKey, i) * pool.length)]);
+    }
+    return [...picked];
+  }
+
+  /**
+   * A real track problem affects every service sharing that piece of
+   * infrastructure, so closures target a route plus its most strongly
+   * station-coupled neighbors from the delay graph.
+   */
+  pickRouteCluster(saltKey = 'route-pick') {
+    if (!this.routes.length) return [];
+    const seedRoute = this.routes[Math.floor(this.random(saltKey, 'seed-route') * this.routes.length)];
+    const neighbors = (this.delayGraph.get(seedRoute.id) || [])
+      .slice()
+      .sort((a, b) => b.couplingStrength - a.couplingStrength)
+      .slice(0, 4)
+      .map((entry) => entry.routeId);
+    return [seedRoute.id, ...neighbors];
+  }
+
+  predictDelayLikelihood(train) {
+    const factors = {
+      weatherRisk: this.activeScenarios.some(s => s.type === 'weather' && s.affectedCorridors?.has(train.corridor)) ? 0.8 : 0.1,
+      hubCongestion: (train.stops || []).filter(s => STATION_CAPACITIES[s.name]).length * 0.15,
+      currentDelay: Math.min(1, (train.delayMinutes || 0) / 30),
+    };
+    const delayProbability = sigmoid(
+      factors.weatherRisk * 0.4 +
+      factors.hubCongestion * 0.3 +
+      factors.currentDelay * 0.3 -
+      1.0
+    );
+    return {
+      probability: delayProbability,
+      expectedDelayMinutes: delayProbability < 0.3 ? 0 : delayProbability < 0.6 ? 8 : 18,
+    };
+  }
+}
+
+/**
+ * The per-route daily service floor only holds while routeCount * floor fits
+ * the daily train budget. Large synthetic route sets (the 1,800-route static
+ * fallback) degrade gracefully to 2 trains/route instead of overriding the
+ * budget — 1,800 routes x 6 trains x 554-seat inventories exhausts the
+ * browser worker heap.
+ */
+export function effectiveMinTrainsPerRoute(routeCount, maxTrains = DEFAULT_DAILY_TRAIN_BUDGET) {
+  if (!routeCount) return MIN_DAILY_TRAINS_PER_ROUTE;
+  const budget = (maxTrains === null || maxTrains === undefined || maxTrains === Infinity)
+    ? DEFAULT_DAILY_TRAIN_BUDGET
+    : maxTrains;
+  return Math.max(2, Math.min(MIN_DAILY_TRAINS_PER_ROUTE, Math.floor((budget * 0.85) / routeCount)));
 }
 
 function allocateDailyServices(routes, maxTrains, calendar) {
+  const minPerRoute = effectiveMinTrainsPerRoute(routes.length, maxTrains);
   const plans = routes.map((route) => ({
     route,
-    desired: serviceCountForRoute(route, calendar),
+    desired: serviceCountForRoute(route, calendar, minPerRoute),
   }));
-  const minTotal = routes.length * MIN_DAILY_TRAINS_PER_ROUTE;
+  const minTotal = routes.length * minPerRoute;
   const desiredTotal = plans.reduce((sum, plan) => sum + plan.desired, 0);
   if (maxTrains === null || maxTrains === undefined || maxTrains === Infinity) {
-    return plans.map((plan) => ({ route: plan.route, serviceCount: plan.desired }));
+    return plans.map((plan) => ({ route: plan.route, serviceCount: Math.min(MAX_DAILY_TRAINS_PER_ROUTE, plan.desired) }));
   }
   const effectiveMax = Math.max(minTotal, maxTrains || DEFAULT_DAILY_TRAIN_BUDGET);
   if (desiredTotal <= effectiveMax) {
-    return plans.map((plan) => ({ route: plan.route, serviceCount: plan.desired }));
+    return plans.map((plan) => ({ route: plan.route, serviceCount: Math.min(MAX_DAILY_TRAINS_PER_ROUTE, plan.desired) }));
   }
 
   const extraBudget = effectiveMax - minTotal;
-  const desiredExtras = plans.reduce((sum, plan) => sum + Math.max(0, plan.desired - MIN_DAILY_TRAINS_PER_ROUTE), 0);
+  const desiredExtras = plans.reduce((sum, plan) => sum + Math.max(0, plan.desired - minPerRoute), 0);
   if (extraBudget <= 0 || desiredExtras <= 0) {
-    return plans.map((plan) => ({ route: plan.route, serviceCount: MIN_DAILY_TRAINS_PER_ROUTE }));
+    return plans.map((plan) => ({ route: plan.route, serviceCount: minPerRoute }));
   }
 
   const scaled = plans.map((plan) => {
-    const extra = Math.max(0, plan.desired - MIN_DAILY_TRAINS_PER_ROUTE);
+    const extra = Math.max(0, plan.desired - minPerRoute);
     const rawExtra = extra * extraBudget / desiredExtras;
     return {
       route: plan.route,
-      serviceCount: MIN_DAILY_TRAINS_PER_ROUTE + Math.floor(rawExtra),
+      serviceCount: minPerRoute + Math.floor(rawExtra),
       remainder: rawExtra - Math.floor(rawExtra),
     };
   });
@@ -831,24 +1173,24 @@ function allocateDailyServices(routes, maxTrains, calendar) {
     byRemainder[i].serviceCount += 1;
     used += 1;
   }
-  return scaled.map(({ route, serviceCount }) => ({ route, serviceCount }));
+  return scaled.map(({ route, serviceCount }) => ({ route, serviceCount: Math.min(MAX_DAILY_TRAINS_PER_ROUTE, serviceCount) }));
 }
 
-function serviceCountForRoute(route, calendar) {
+function serviceCountForRoute(route, calendar, minPerRoute = MIN_DAILY_TRAINS_PER_ROUTE) {
   const rank = Math.max(0, Math.min(1, route.frequencyRank || 0.08));
   const stops = route.stops || [];
   const originTier = stops[0]?.tier;
   const destinationTier = stops[stops.length - 1]?.tier;
   const hubScore = tierScore(originTier) + tierScore(destinationTier);
   const distance = route.totalDistanceKm || 0;
-  const distanceScore = distance > 1600 ? 2.4 : distance > 900 ? 1.7 : distance > 350 ? 1.1 : 0.55;
-  const corridorScore = route.corridor?.includes('East China') || route.corridor?.includes('North China') ? 1.15 : 0.55;
-  const serviceNoise = deterministicNoise(`${route.id}:${route.code}:service-plan`) * 2.4;
-  const trunkBonus = rank > 0.85 ? 5 : rank > 0.65 ? 3 : rank > 0.35 ? 1 : 0;
-  const baseline = MIN_DAILY_TRAINS_PER_ROUTE + Math.round(2.2 + Math.sqrt(rank) * 5.4 + hubScore + distanceScore + corridorScore + serviceNoise + trunkBonus);
-  const surgeExtras = Math.round(Math.max(0, baseline - MIN_DAILY_TRAINS_PER_ROUTE) * Math.max(0, (calendar?.capacityMultiplier || 1) - 1) * 0.92);
+  const distanceScore = distance > 1600 ? 1.4 : distance > 900 ? 1.1 : distance > 350 ? 0.7 : 0.35;
+  const serviceNoise = deterministicNoise(`${route.id}:${route.code}:service-plan`) * 1.2;
+  // Flatter trunk bonus so high-rank routes don't dominate
+  const trunkBonus = 1.2 + sigmoid((rank - 0.5) * 4) * 2.0;
+  const baseline = minPerRoute + Math.round(1.5 + Math.sqrt(rank) * 2.4 + hubScore * 0.5 + distanceScore + serviceNoise + trunkBonus);
+  const surgeExtras = Math.round(Math.max(0, baseline - minPerRoute) * Math.max(0, (calendar?.capacityMultiplier || 1) - 1) * 0.5);
   const holidayFloor = (calendar?.demandMultiplier || 1) >= 1.35 ? 1 : 0;
-  return Math.max(MIN_DAILY_TRAINS_PER_ROUTE, baseline + surgeExtras + holidayFloor);
+  return Math.min(MAX_DAILY_TRAINS_PER_ROUTE, Math.max(minPerRoute, baseline + surgeExtras + holidayFloor));
 }
 
 function tierScore(tier) {
@@ -958,6 +1300,10 @@ function roundMultiplier(value) {
 
 function plannedSegmentMinutes(route, segment, segmentIndex) {
   const dwell = route.stops[segmentIndex + 1]?.dwellMinutes || 2;
+  // Use real travel time from 12306 database when available
+  if (segment.realTravelMinutes != null && segment.realTravelMinutes > 0) {
+    return Math.max(1, Math.round(segment.realTravelMinutes + dwell));
+  }
   const speed = Math.min(segment.speedLimitKmh || DEFAULT_SPEED_KMH, DEFAULT_SPEED_KMH);
   return Math.max(8, Math.round((segment.distanceKm / speed) * 60 + dwell));
 }
@@ -1013,33 +1359,13 @@ function departureBucketFor(fraction) {
 
 function routeDemandIntensity(train) {
   const rank = train.frequencyRank || 0.08;
-  const corridorBoost = train.corridor?.includes('East China') || train.corridor?.includes('North China') ? 0.18 : 0.04;
-  const distanceBoost = train.totalDistanceKm > 900 ? 0.08 : train.totalDistanceKm < 300 ? 0.04 : 0.12;
-  const hubBoost = (tierScore(train.stops[0]?.tier) + tierScore(train.stops[train.stops.length - 1]?.tier)) / 6;
-  return Math.max(0.65, Math.min(1.45, 0.78 + Math.sqrt(rank) * 0.45 + corridorBoost + distanceBoost + hubBoost));
-}
-
-function selectVisibleTrains(trains, limit) {
-  const active = trains.filter((train) => train.status === 'running');
-  const scheduled = trains.filter((train) => train.status === 'scheduled' && train.minutesToDeparture <= 120);
-  const completed = trains.filter((train) => train.status === 'completed').slice(-60);
-  if (active.length >= limit) {
-    return active
-      .sort((a, b) => {
-        const totalA = (a.stops?.length || 1) - 1;
-        const totalB = (b.stops?.length || 1) - 1;
-        const progressA = (a.currentSegmentIndex || 0) / Math.max(1, totalA);
-        const progressB = (b.currentSegmentIndex || 0) / Math.max(1, totalB);
-        return progressB - progressA;
-      })
-      .slice(0, limit);
-  }
-  const remaining = limit - active.length;
-  const scheduledSlice = scheduled
-    .sort((a, b) => a.minutesToDeparture - b.minutesToDeparture)
-    .slice(0, Math.min(remaining, scheduled.length));
-  const completedSlice = completed.slice(-Math.min(Math.max(0, remaining - scheduledSlice.length), 60));
-  return [...active, ...scheduledSlice, ...completedSlice];
+  // Flatter corridor boost to avoid East/North China dominance
+  const corridorBoost = train.corridor?.includes('East China') || train.corridor?.includes('North China') ? 0.10 : 0.06;
+  const distanceBoost = train.totalDistanceKm > 900 ? 0.06 : train.totalDistanceKm < 300 ? 0.03 : 0.08;
+  const hubBoost = (tierScore(train.stops[0]?.tier) + tierScore(train.stops[train.stops.length - 1]?.tier)) / 8;
+  // Base load higher for low-rank routes so they don't run empty
+  const baseLoad = 0.72 + Math.sqrt(rank) * 0.28 + corridorBoost + distanceBoost + hubBoost;
+  return Math.max(0.55, Math.min(1.25, baseLoad));
 }
 
 function selectVisibleCandidates(active, scheduled, completed, limit) {
@@ -1062,22 +1388,6 @@ function selectVisibleCandidates(active, scheduled, completed, limit) {
   return [...active, ...scheduledSlice, ...completedSlice];
 }
 
-function networkSummary(trains) {
-  const byCorridor = new Map();
-  const byProvince = new Map();
-  const byStation = new Map();
-  for (const train of trains) {
-    increment(byCorridor, train.corridor || 'Unknown', train);
-    increment(byProvince, train.originProvince || 'Unknown', train);
-    if (train.status === 'running') increment(byStation, train.currentStation || 'Unknown', train);
-  }
-  return {
-    corridors: [...byCorridor.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
-    originProvinces: [...byProvince.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
-    stationHotspots: [...byStation.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.active - a.active || b.passengers - a.passengers).slice(0, 16),
-  };
-}
-
 function networkSummaryFromTrains(trains, nowMinutes) {
   const byCorridor = new Map();
   const byProvince = new Map();
@@ -1097,14 +1407,6 @@ function networkSummaryFromTrains(trains, nowMinutes) {
     originProvinces: [...byProvince.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.trains - a.trains),
     stationHotspots: [...byStation.entries()].map(([name, value]) => ({ name, ...value })).sort((a, b) => b.active - a.active || b.passengers - a.passengers).slice(0, 16),
   };
-}
-
-function increment(map, key, train) {
-  if (!map.has(key)) map.set(key, { trains: 0, active: 0, passengers: 0 });
-  const value = map.get(key);
-  value.trains += 1;
-  if (train.status === 'running') value.active += 1;
-  value.passengers += train.passengerCount || 0;
 }
 
 function incrementRaw(map, key, train) {
@@ -1173,11 +1475,6 @@ function stopSequenceHash(stops = []) {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-function average(values) {
-  if (!values.length) return 0;
-  return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
-}
-
 function distanceBetween(train, originIndex, destinationIndex) {
   let total = 0;
   for (let index = originIndex; index < destinationIndex; index += 1) {
@@ -1185,6 +1482,30 @@ function distanceBetween(train, originIndex, destinationIndex) {
     total += train.segments[index]?.distanceKm ?? haversineKm(train.stops[index], train.stops[index + 1]);
   }
   return total;
+}
+
+const SEAT_CLASS_FARE_KEYS = {
+  business: ['商务座', '高级软卧', '软座', '一等座'],
+  firstClass: ['一等座', '一等卧', '软卧', '软座', '商务座'],
+  secondClass: ['二等座', '二等卧', '硬卧', '硬座', '无座'],
+};
+
+function resolveRealBaseFare(train, seatClass) {
+  const fares = train.baseRoute?.fares;
+  if (!fares) return null;
+  const keys = SEAT_CLASS_FARE_KEYS[seatClass];
+  if (!keys) return null;
+  for (const key of keys) {
+    const price = fares[key];
+    if (price != null && price > 0) return price;
+  }
+  // Fallback: use the cheapest available fare scaled by typical multiplier ratios
+  const available = Object.values(fares).filter((p) => p != null && p > 0);
+  if (!available.length) return null;
+  const cheapest = Math.min(...available);
+  if (seatClass === 'business') return Math.round(cheapest * 3.0);
+  if (seatClass === 'firstClass') return Math.round(cheapest * 1.7);
+  return cheapest;
 }
 
 function currentDelay(train) {
@@ -1216,23 +1537,51 @@ function groupSizeFromRandom(value) {
   return 6;
 }
 
-function weightedTrainChoice(trains, value) {
-  const weights = trains.map((train) => {
-    // For scheduled trains, use average load across all segments instead of
-    // segment 0 only, which can be misleading when bookings are distributed.
-    const load = train.status === 'scheduled'
-      ? train.inventory.averageLoadFactor()
-      : train.inventory.occupancyForSegment(train.currentSegmentIndex || 0).loadFactor;
-    const departurePressure = train.departureMinute > 0 ? Math.max(0.2, Math.min(1.5, 1.1 - Math.abs(train.departureMinute - 540) / 900)) : 1;
-    return Math.max(0.1, (train.frequencyRank || 0.3) + 0.2) * departurePressure * Math.max(0.15, 1 - load);
-  });
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  let target = value * total;
-  for (let i = 0; i < trains.length; i += 1) {
-    target -= weights[i];
-    if (target <= 0) return trains[i];
+function trainDemandWeight(train) {
+  // For scheduled trains, use average load across all segments instead of
+  // segment 0 only, which can be misleading when bookings are distributed.
+  const load = train.status === 'scheduled'
+    ? train.inventory.averageLoadFactor()
+    : train.inventory.occupancyForSegment(train.currentSegmentIndex || 0).loadFactor;
+  const departurePressure = train.departureMinute > 0 ? Math.max(0.2, Math.min(1.5, 1.1 - Math.abs(train.departureMinute - 540) / 900)) : 1;
+  // Flattened frequency rank to reduce "rich get richer" effect
+  const frequencyWeight = 0.4 + Math.sqrt(Math.max(0.05, train.frequencyRank || 0.3)) * 0.6;
+  // Exploration bonus: prefer trains with lower load to spread demand
+  const explorationBonus = Math.max(0.2, 1.15 - load);
+  return Math.max(0.15, frequencyWeight) * departurePressure * explorationBonus;
+}
+
+function prefixLowerBound(prefix, target) {
+  let low = 0;
+  let high = prefix.length - 1;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (prefix[mid] < target) low = mid + 1;
+    else high = mid;
   }
-  return trains[trains.length - 1];
+  return low;
+}
+
+/**
+ * Intra-day booking demand shape. Chinese HSR booking traffic is strongly
+ * bimodal: a deep overnight trough (most lines do not even run 01:00-05:00),
+ * a morning peak, a steady midday plateau, and an evening peak.
+ */
+export function hourlyDemandShape(minuteOfDay = 0) {
+  const hour = minuteOfDay / 60;
+  if (hour < 5) return 0.08;
+  if (hour < 7) return 0.45 + (hour - 5) * 0.45;
+  if (hour < 10) return 1.35;
+  if (hour < 16) return 1.0;
+  if (hour < 20) return 1.3;
+  if (hour < 23) return 0.7;
+  return 0.25;
+}
+
+function scenarioAffectsTrain(scenario, train) {
+  if (scenario.affectedCorridors) return scenario.affectedCorridors.has(train.corridor);
+  if (scenario.affectedRouteIds) return scenario.affectedRouteIds.has(train.routeId);
+  return false;
 }
 
 function generateTicketId(seed, counter) {
@@ -1253,6 +1602,10 @@ function seeded(key) {
   return ((hash >>> 0) % 1000000) / 1000000;
 }
 
+function sigmoid(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
 function deterministicNoise(key) {
   return seeded(`noise:${key}`);
 }
@@ -1266,4 +1619,29 @@ function formatClock(minutes) {
   const hour = Math.floor(normalized / 60).toString().padStart(2, '0');
   const minute = (normalized % 60).toString().padStart(2, '0');
   return `${hour}:${minute}`;
+}
+
+function buildDelayGraph(routes) {
+  const graph = new Map();
+  const stationRoutes = new Map();
+  for (const route of routes) {
+    for (const stop of route.stops || []) {
+      if (!stationRoutes.has(stop.name)) stationRoutes.set(stop.name, []);
+      stationRoutes.get(stop.name).push(route.id);
+    }
+  }
+  for (const route of routes) {
+    const connected = new Map();
+    for (const stop of route.stops || []) {
+      for (const otherRouteId of stationRoutes.get(stop.name) || []) {
+        if (otherRouteId === route.id) continue;
+        connected.set(otherRouteId, (connected.get(otherRouteId) || 0) + 1);
+      }
+    }
+    graph.set(route.id, [...connected.entries()].map(([routeId, count]) => ({
+      routeId,
+      couplingStrength: count,
+    })));
+  }
+  return graph;
 }

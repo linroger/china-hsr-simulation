@@ -13,11 +13,17 @@ export function priceQuote({
   elasticity = -1.25,
   surgeMultiplier = 1,
   bookingVelocity = 0,
+  baseFare = null,
 }) {
   const config = SEAT_CLASSES[seatClass];
   if (!config) throw new Error(`Unknown seat class: ${seatClass}`);
-  const distanceDiscount = distanceKm > 1200 ? 0.88 : distanceKm > 800 ? 0.92 : distanceKm > 500 ? 0.96 : 1;
-  const baseFare = distanceKm * BASE_SECOND_CLASS_YUAN_PER_KM * config.multiplier * distanceDiscount;
+  let computedBaseFare;
+  if (baseFare != null && baseFare > 0) {
+    computedBaseFare = baseFare;
+  } else {
+    const distanceDiscount = distanceKm > 1200 ? 0.88 : distanceKm > 800 ? 0.92 : distanceKm > 500 ? 0.96 : 1;
+    computedBaseFare = distanceKm * BASE_SECOND_CLASS_YUAN_PER_KM * config.multiplier * distanceDiscount;
+  }
   const scarcity = 1 + sigmoid((loadFactor - 0.62) * 7) * 0.48;
   const timePressure = hoursToDeparture < 2 ? 1.32 : hoursToDeparture < 8 ? 1.18 : hoursToDeparture < 24 ? 1.08 : hoursToDeparture > 168 ? 0.9 : 1;
   const peak = departureHour >= 7 && departureHour <= 9 || departureHour >= 17 && departureHour <= 20 ? 1.16 : 1;
@@ -25,11 +31,17 @@ export function priceQuote({
   const noShowBuffer = 1 + Math.min(0.06, noShowRisk);
   const bidPrice = distanceKm * BASE_SECOND_CLASS_YUAN_PER_KM * Math.pow(Math.max(0.03, loadFactor), 1.8) * config.multiplier * 0.42;
   const velocityMultiplier = 1 + Math.min(0.3, bookingVelocity * 0.05);
+  // Floating-fare discount: China Railway discounts lightly-loaded departures
+  // inside the booking horizon (officially up to ~45% off; modeled gentler
+  // here). Yield management dumps inventory rather than running empty seats.
+  const offPeakDiscount = loadFactor < 0.45 && hoursToDeparture < 48
+    ? Math.max(0.8, 1 - (0.45 - loadFactor) * 0.45)
+    : 1;
   const expectedDemandLift = Math.exp(elasticity * Math.log(Math.max(0.7, scarcity * timePressure * velocityMultiplier)));
-  const raw = (baseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer * velocityMultiplier * Math.max(0.8, surgeMultiplier);
+  const raw = (computedBaseFare + bidPrice) * scarcity * timePressure * peak * frequencyRelief * noShowBuffer * velocityMultiplier * offPeakDiscount * Math.max(0.8, surgeMultiplier);
   return {
     price: roundToNearest(Math.max(5, raw), 5),
-    baseFare: roundToNearest(baseFare, 1),
+    baseFare: roundToNearest(computedBaseFare, 1),
     bidPrice: roundToNearest(bidPrice, 1),
     loadFactor,
     multipliers: {
@@ -39,6 +51,7 @@ export function priceQuote({
       frequencyRelief: round(frequencyRelief),
       noShowBuffer: round(noShowBuffer),
       velocity: round(velocityMultiplier),
+      offPeakDiscount: round(offPeakDiscount),
       surge: round(surgeMultiplier),
     },
     elasticity,

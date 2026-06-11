@@ -1,6 +1,6 @@
 import { SimulationEngine } from './SimulationEngine.js';
 
-const SNAPSHOT_INTERVAL_MS = 100;
+const SNAPSHOT_INTERVAL_MS = 200;
 const LEDGER_FLUSH_INTERVAL_MS = 4000;
 const LEDGER_BATCH_LIMIT = 800;
 
@@ -52,6 +52,11 @@ self.onmessage = (event) => {
       const result = engine.bookTrip(payload);
       postSnapshot('booking');
       respond(id, result);
+    } else if (type === 'injectScenario') {
+      const scenario = engine.injectScenario(payload.scenarioType, payload.params || {});
+      respond(id, scenario
+        ? { ok: true, scenario: { id: scenario.id, type: scenario.type, label: scenario.label, untilMinute: scenario.untilMinute } }
+        : { ok: false, error: `Unknown scenario type: ${payload.scenarioType}` });
     } else if (type === 'snapshot') {
       const snapshot = engine.snapshot();
       // Sync lastPublishedTrains so subsequent tick deltas remain consistent

@@ -200,9 +200,13 @@ def load_source_rows(conn: Any, *, table_prefix: str, dialect: str) -> dict[str,
         "station_locations": table_prefix + "station_locations",
         "railway_tracks": table_prefix + "railway_tracks",
         "station_track_links": table_prefix + "station_track_links",
+        "tickets": table_prefix + "tickets",
+        "ticket_prices": table_prefix + "ticket_prices",
     }
     has_railway_tracks = table_exists(conn, tables["railway_tracks"], dialect)
     has_station_track_links = table_exists(conn, tables["station_track_links"], dialect)
+    has_tickets = table_exists(conn, tables["tickets"], dialect)
+    has_ticket_prices = table_exists(conn, tables["ticket_prices"], dialect)
     return {
         "stations": rows(conn, f"SELECT station_code, station_name, station_pinyin, city FROM {q(tables['stations'], dialect)}"),
         "stationLocations": rows(
@@ -247,6 +251,16 @@ def load_source_rows(conn: Any, *, table_prefix: str, dialect: str) -> dict[str,
             ORDER BY station_code, track_id
             """,
         ) if has_station_track_links else [],
+        "ticketPrices": rows(
+            conn,
+            f"""
+            SELECT t.train_no, t.from_station, t.to_station, p.seat_name, p.price
+            FROM {q(tables['tickets'], dialect)} t
+            JOIN {q(tables['ticket_prices'], dialect)} p ON t.id = p.ticket_id
+            WHERE t.train_no IS NOT NULL AND p.price > 0
+            ORDER BY t.train_no, t.from_station, t.to_station, p.seat_name
+            """,
+        ) if has_tickets and has_ticket_prices else [],
         "tableCounts": {
             name: int(scalar(conn, f"SELECT COUNT(*) FROM {q(table, dialect)}")) if table_exists(conn, table, dialect) else 0
             for name, table in tables.items()
@@ -294,6 +308,14 @@ def build_simulation_payload(
     for row in source["routeStations"]:
         stops_by_route[int(row["train_route_id"])].append(row)
 
+    # Build fare lookup: train_no -> {seat_name -> average_price}
+    fare_by_train: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(list))
+    for row in source.get("ticketPrices", []):
+        fare_by_train[str(row.get("train_no") or "")][str(row.get("seat_name") or "")].append(float(row.get("price") or 0))
+    train_fares: dict[str, dict[str, float]] = {}
+    for train_no, seat_prices in fare_by_train.items():
+        train_fares[train_no] = {seat: round(sum(prices) / len(prices), 2) for seat, prices in seat_prices.items() if prices}
+
     routes = []
     skipped_missing_coords = 0
     skipped_class = 0
@@ -337,6 +359,25 @@ def build_simulation_payload(
             print(f"[oceanbase:export] warning: skipping route {route_id} because stop '{stop_row['station_name']}' has no valid coordinates", file=sys.stderr)
             continue
 
+        # Compute real segment travel times from lishi differences.
+        # lishi at each station = elapsed time from origin departure to arrival at that station.
+        # For segment 0 (origin -> stop[1]): lishi_diff = travel time
+        # For segment i>0: lishi_diff = dwell at stop[i] + travel time to stop[i+1]
+        stop_lishi_minutes = [minutes_from_clock(stop_row.get("lishi")) for stop_row in stop_rows]
+        segment_travel_minutes = []
+        for i in range(len(stop_lishi_minutes) - 1):
+            prev_lishi = stop_lishi_minutes[i]
+            next_lishi = stop_lishi_minutes[i + 1]
+            if prev_lishi is not None and next_lishi is not None and next_lishi >= prev_lishi:
+                lishi_diff = next_lishi - prev_lishi
+                # Subtract dwell at the origin station of this segment (not for origin itself)
+                if i > 0:
+                    dwell = stops[i].get("dwellMinutes", 3)
+                    lishi_diff = max(1, lishi_diff - dwell)
+                segment_travel_minutes.append(lishi_diff)
+            else:
+                segment_travel_minutes.append(None)
+
         segments = []
         for index in range(len(stops) - 1):
             segment, matched = build_segment(
@@ -346,6 +387,9 @@ def build_simulation_payload(
                 static_segments=static_context["segmentsByEdge"],
                 rail_network=rail_network,
             )
+            real_travel = segment_travel_minutes[index] if index < len(segment_travel_minutes) else None
+            if real_travel is not None and real_travel > 0:
+                segment["realTravelMinutes"] = real_travel
             segments.append(segment)
             if matched == "rail-graph":
                 rail_graph_segments += 1
@@ -356,11 +400,71 @@ def build_simulation_payload(
             else:
                 fallback_segments += 1
 
+        # Detect and fix stations with wrong coordinates that cause impossible segment speeds.
+        # If a segment implies > 350 km/h, the destination station likely has bad coordinates.
+        MAX_PLAUSIBLE_SPEED_KMH = 350
+        corrected_station_count = 0
+        for seg_index in range(len(segments)):
+            seg = segments[seg_index]
+            rt = seg.get("realTravelMinutes")
+            if not rt or rt <= 0:
+                continue
+            speed = seg["distanceKm"] / (rt / 60)
+            if speed <= MAX_PLAUSIBLE_SPEED_KMH:
+                continue
+            bad_stop_index = seg_index + 1
+            if bad_stop_index <= 0 or bad_stop_index >= len(stops):
+                continue
+            prev_stop = stops[bad_stop_index - 1]
+            prev_lishi = stop_lishi_minutes[bad_stop_index - 1]
+            bad_lishi = stop_lishi_minutes[bad_stop_index]
+            if prev_lishi is None or bad_lishi is None:
+                continue
+            t1 = max(1, bad_lishi - prev_lishi)
+            # Try to interpolate between prev and next
+            if bad_stop_index < len(stops) - 1:
+                next_stop = stops[bad_stop_index + 1]
+                next_lishi = stop_lishi_minutes[bad_stop_index + 1]
+                if next_lishi is not None:
+                    t2 = max(1, next_lishi - bad_lishi)
+                    ratio = t1 / (t1 + t2)
+                    new_lng = prev_stop["lng"] + (next_stop["lng"] - prev_stop["lng"]) * ratio
+                    new_lat = prev_stop["lat"] + (next_stop["lat"] - prev_stop["lat"]) * ratio
+                else:
+                    # Fallback: estimate from prev in the direction of route trend
+                    new_lng, new_lat = _estimate_coordinate(prev_stop, stops, bad_stop_index, t1)
+            else:
+                # Last stop: estimate from prev in the direction of route trend
+                new_lng, new_lat = _estimate_coordinate(prev_stop, stops, bad_stop_index, t1)
+            stops[bad_stop_index]["lng"] = round(new_lng, 6)
+            stops[bad_stop_index]["lat"] = round(new_lat, 6)
+            stops[bad_stop_index]["coordinateSource"] = stops[bad_stop_index].get("coordinateSource", "") + "+interpolated"
+            corrected_station_count += 1
+            # Rebuild this segment and the next segment with corrected coordinates
+            for rebuild_index in [seg_index, seg_index + 1]:
+                if rebuild_index >= len(segments):
+                    continue
+                new_seg, new_matched = build_segment(
+                    stops[rebuild_index],
+                    stops[rebuild_index + 1],
+                    route_type=train_type,
+                    static_segments=static_context["segmentsByEdge"],
+                    rail_network=rail_network,
+                )
+                new_rt = segment_travel_minutes[rebuild_index] if rebuild_index < len(segment_travel_minutes) else None
+                if new_rt is not None and new_rt > 0:
+                    new_seg["realTravelMinutes"] = new_rt
+                segments[rebuild_index] = new_seg
+        if corrected_station_count:
+            print(f"[oceanbase:export] route {route_code}: corrected {corrected_station_count} station coordinate(s)", file=sys.stderr)
+
         route_code = route_row.get("train_code") or route_row.get("train_no") or f"R{route_id}"
+        train_no = route_row.get("train_no") or ""
+        fares = train_fares.get(train_no, {})
         route = {
             "id": f"ob12306-route-{route_id}-{safe_slug(route_code)}",
             "code": route_code,
-            "trainNo": route_row.get("train_no") or route_code,
+            "trainNo": train_no,
             "type": train_type,
             "origin": stops[0]["name"],
             "destination": stops[-1]["name"],
@@ -369,11 +473,12 @@ def build_simulation_payload(
             "corridor": f"{stops[0].get('city') or stops[0].get('province') or 'Unknown'} / {stops[-1].get('city') or stops[-1].get('province') or 'Unknown'}",
             "originProvince": stops[0].get("province") or "",
             "destinationProvince": stops[-1].get("province") or "",
-            "provenance": "OceanBase cr_12306 route_stations ordered stop contract; coordinates from cr_12306_station_locations with generated static-data fallback.",
+            "provenance": "12306 database route_stations ordered stop contract; coordinates from 12306 station_locations with generated static-data fallback.",
             "routeContract": build_route_contract(route_id, route_code, stops),
             "stops": stops,
             "segments": segments,
             "geometry": merge_segment_geometry(segments),
+            "fares": fares if fares else None,
         }
         routes.append(route)
         used_station_names.update(stop["name"] for stop in stops)
@@ -1204,6 +1309,30 @@ def normalize_time(value: Any) -> str | None:
     if not re.fullmatch(r"\d{2}:\d{2}", text):
         return None
     return text
+
+
+def _estimate_coordinate(prev_stop: dict[str, Any], stops: list[dict[str, Any]], bad_index: int, travel_minutes: int) -> tuple[float, float]:
+    """Estimate a station coordinate when interpolation is not possible.
+    Move from prev_stop in the general route direction at ~250 km/h."""
+    # Determine direction from previous segment(s)
+    if bad_index >= 2:
+        # Use direction from stops[bad_index - 2] to prev_stop
+        dx = prev_stop["lng"] - stops[bad_index - 2]["lng"]
+        dy = prev_stop["lat"] - stops[bad_index - 2]["lat"]
+    elif bad_index + 1 < len(stops):
+        # Use direction from prev_stop to next_stop (before correction)
+        dx = stops[bad_index + 1]["lng"] - prev_stop["lng"]
+        dy = stops[bad_index + 1]["lat"] - prev_stop["lat"]
+    else:
+        dx, dy = 0.5, 0.3
+    length = math.hypot(dx, dy) or 1
+    # Approximate km per degree at China's latitude (~31°N)
+    km_per_deg = 96
+    distance_km = min(travel_minutes * 4.0, 600)  # cap at 600km
+    offset_deg = distance_km / km_per_deg
+    new_lng = prev_stop["lng"] + (dx / length) * offset_deg
+    new_lat = prev_stop["lat"] + (dy / length) * offset_deg
+    return new_lng, new_lat
 
 
 def edge_key(origin: Any, destination: Any) -> str:

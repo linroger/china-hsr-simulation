@@ -1,9 +1,32 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { CalendarDays, CircleDollarSign, Cpu, Database, Gauge, Timer, TrainFront, TrendingUp, Users } from 'lucide-react';
+import { CalendarDays, CircleDollarSign, CloudLightning, Cpu, Database, Gauge, Snowflake, Timer, TrainFront, TrendingUp, Users, Wind, Wrench } from 'lucide-react';
 
-export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummary }) {
+const SCENARIO_BUTTONS = [
+  { type: 'thunderstorm', label: 'Thunderstorm', icon: CloudLightning },
+  { type: 'typhoon', label: 'Typhoon', icon: Wind },
+  { type: 'snow', label: 'Snow & ice', icon: Snowflake },
+  { type: 'track_closure', label: 'Track closure', icon: Wrench },
+  { type: 'surge_demand', label: 'Demand surge', icon: TrendingUp },
+];
+
+export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummary, onInjectScenario }) {
   const trains = snapshot.trains || [];
+  const [scenarioPending, setScenarioPending] = useState('');
+  const [scenarioMessage, setScenarioMessage] = useState('');
+
+  async function handleScenario(type, label) {
+    if (!onInjectScenario || scenarioPending) return;
+    setScenarioPending(type);
+    try {
+      const result = await onInjectScenario(type);
+      setScenarioMessage(result?.ok ? `${result.scenario.label} injected.` : (result?.error || 'Scenario rejected.'));
+    } catch (error) {
+      setScenarioMessage(error.message || `Failed to inject ${label}.`);
+    } finally {
+      setScenarioPending('');
+    }
+  }
 
   const topLoads = useMemo(() =>
     trains.slice().sort((a, b) => b.loadFactor - a.loadFactor).slice(0, 18),
@@ -47,6 +70,34 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
         <input id="speed" type="range" min="1" max="480" step="1" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} />
         <strong>{speed}x</strong>
       </section>
+
+      <section className="control-strip scenario-controls">
+        <label>Inject disruption</label>
+        {SCENARIO_BUTTONS.map(({ type, label, icon: Icon }) => (
+          <button
+            key={type}
+            type="button"
+            className="scenario-button"
+            disabled={Boolean(scenarioPending)}
+            onClick={() => handleScenario(type, label)}
+          >
+            <Icon size={14} />
+            <span>{label}</span>
+          </button>
+        ))}
+        {scenarioMessage && <em className="scenario-feedback">{scenarioMessage}</em>}
+      </section>
+
+      {snapshot.stats?.activeScenarios?.length > 0 && (
+        <section className="scenario-banner">
+          <b>Active Scenarios</b>
+          {snapshot.stats.activeScenarios.map((s, i) => (
+            <span key={i} className={`scenario-tag scenario-${s.type}`}>
+              {s.label} ({s.remainingMinutes}m)
+            </span>
+          ))}
+        </section>
+      )}
 
       <section className="chart-grid">
         <div className="panel">
@@ -95,6 +146,7 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
             <Realism label="Station stops processed" value={snapshot.stats.stationStops || 0} />
             <Realism label="Active delayed trains >= 3 min" value={snapshot.stats.activeDelayedTrains || 0} />
             <Realism label="No-show seats released" value={snapshot.stats.noShows || 0} />
+            <Realism label="Cancellations refunded" value={snapshot.stats.cancelledBookings || 0} />
             <Realism label="Map render cap" value={snapshot.stats.visibleTrainCount || trains.length} />
             <Realism label="Median trains per route" value={snapshot.stats.medianTrainsPerRoute || 0} />
             <Realism label="Calendar capacity multiplier" value={`${snapshot.stats.calendarCapacityMultiplier || 1}x`} />

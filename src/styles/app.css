@@ -190,16 +190,6 @@ input {
   background: #38bdf8;
 }
 
-.map-legend .hub {
-  background: #f59e0b;
-  transform: rotate(45deg);
-}
-
-.map-legend .regional {
-  background: #06b6d4;
-  border-radius: 2px;
-}
-
 .map-legend .train-low {
   background: #10b981;
 }
@@ -346,6 +336,47 @@ input {
 
 .control-strip input {
   accent-color: #38bdf8;
+}
+
+.scenario-controls {
+  grid-template-columns: auto repeat(5, auto) 1fr;
+  flex-wrap: wrap;
+}
+
+.scenario-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #cbd5e1;
+  background: rgba(30, 41, 59, .85);
+  border: 1px solid rgba(148, 163, 184, .25);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease;
+}
+
+.scenario-button:hover:not(:disabled) {
+  border-color: #38bdf8;
+  color: #e0f2fe;
+}
+
+.scenario-button:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+.scenario-feedback {
+  color: #86efac;
+  font-size: 12px;
+  font-style: normal;
+}
+
+@media (max-width: 1100px) {
+  .scenario-controls {
+    grid-template-columns: repeat(3, auto);
+  }
 }
 
 .chart-grid {
@@ -581,6 +612,50 @@ meter {
   font-size: clamp(14px, 1.6vw, 24px);
   overflow-wrap: anywhere;
   line-height: 1.15;
+}
+
+.scenario-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(180, 83, 9, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  margin: 0 16px 12px;
+  flex-wrap: wrap;
+}
+
+.scenario-banner b {
+  color: #fbbf24;
+  font-size: 13px;
+}
+
+.scenario-tag {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.scenario-weather {
+  background: rgba(59, 130, 246, 0.18);
+  color: #93c5fd;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.scenario-infrastructure {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.scenario-demand {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.3);
 }
 
 @media (max-width: 1100px) {

@@ -9,7 +9,7 @@ export default function App() {
   const workerRef = useRef(null);
   const [snapshot, setSnapshot] = useState(null);
   const [yearlySummary, setYearlySummary] = useState(null);
-  const [loading, setLoading] = useState('Loading generated railway database...');
+  const [loading, setLoading] = useState('Loading China HSR simulation...');
   const [activeView, setActiveView] = useState('map');
   const [speed, setSpeed] = useState(120);
   const [error, setError] = useState('');
@@ -19,7 +19,7 @@ export default function App() {
     let cancelled = false;
     async function load() {
       try {
-        setLoading('Querying OceanBase route contracts...');
+        setLoading('Loading real 12306 route data...');
         const [oceanbaseData, annualSummary] = await Promise.all([
           fetchOptionalJson('/api/oceanbase-simulation-data'),
           fetchOptionalJson('/oceanbase-yearly-summary.json'),
@@ -28,12 +28,12 @@ export default function App() {
           ? {
               stationData: { stations: oceanbaseData.stations },
               routeData: { routes: oceanbaseData.routes },
-              source: `OceanBase 12306 (${oceanbaseData.routes.length.toLocaleString()} routes)`,
+              source: `12306 DB (${oceanbaseData.routes.length.toLocaleString()} routes)`,
             }
           : await loadStaticSimulationData();
         if (cancelled) return;
         setYearlySummary(annualSummary);
-        setLoading(`Starting simulation worker thread from ${source}...`);
+        setLoading(`Starting simulation with ${source}...`);
         const worker = new SimulationWorkerClient({
           onSnapshot: (nextSnapshot) => {
             if (!cancelled) setSnapshot((previous) => mergeSnapshot(previous, nextSnapshot));
@@ -82,6 +82,10 @@ export default function App() {
     return result;
   }, []);
 
+  const injectScenario = useCallback((scenarioType, params = {}) => {
+    return workerRef.current?.injectScenario(scenarioType, params);
+  }, []);
+
   const activeIcon = useMemo(() => ({
     map: <Map size={16} />,
     dashboard: <Gauge size={16} />,
@@ -124,7 +128,7 @@ export default function App() {
         {activeView === 'map' && <HSRMap trains={snapshot.trains} events={snapshot.events} />}
         {activeView === 'dashboard' && (
           <Suspense fallback={<LoadingScreen message="Loading dashboard..." />}>
-            <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} yearlySummary={yearlySummary} />
+            <Dashboard snapshot={snapshot} speed={speed} onSpeedChange={handleSpeedChange} yearlySummary={yearlySummary} onInjectScenario={injectScenario} />
           </Suspense>
         )}
         {activeView === 'booking' && (
@@ -202,9 +206,12 @@ function formatSimulationClock(snapshot) {
 }
 
 function mergeSnapshot(previous, nextSnapshot) {
-  if (!previous || nextSnapshot.bookingOptions) return nextSnapshot;
+  if (!previous) return nextSnapshot;
 
   // Delta merge: update changed trains, remove vanished ones, keep the rest.
+  // A delta may still carry refreshed bookingOptions (a train completed or
+  // turned around) — its train list is partial either way, so it must always
+  // merge rather than replace, or unchanged markers vanish from the map.
   if (nextSnapshot.delta) {
     const trainsById = Object.create(null);
     for (const train of previous.trains || []) {
@@ -219,12 +226,15 @@ function mergeSnapshot(previous, nextSnapshot) {
     return {
       ...nextSnapshot,
       trains: Object.values(trainsById),
-      bookingOptions: previous.bookingOptions.slice(),
+      // Carry the reference forward when no refresh arrived — booking options
+      // are immutable between rebuilds, so cloning 6,000 entries 5x/second is
+      // wasted work.
+      bookingOptions: nextSnapshot.bookingOptions || previous.bookingOptions,
     };
   }
 
   return {
     ...nextSnapshot,
-    bookingOptions: previous.bookingOptions.slice(),
+    bookingOptions: nextSnapshot.bookingOptions || previous.bookingOptions,
   };
 }

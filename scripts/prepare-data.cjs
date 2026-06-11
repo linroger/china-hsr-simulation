@@ -91,13 +91,18 @@ const LINE_CSV = findSourceFile([
   'sim/public/line.csv',
   'sim/dist/line.csv',
 ]);
+const DB_12306 = findSourceFileOptional([
+  '12306.db',
+  '../12306.db',
+  '../../12306.db',
+]);
 const OSM_POINTS = findSourceFileOptional([
   'hotosm_chn_railways_points_geojson/hotosm_chn_railways_points_geojson.geojson',
 ]);
 const OSM_LINES = findSourceFileOptional([
   'hotosm_chn_railways_lines_geojson/hotosm_chn_railways_lines_geojson.geojson',
 ]);
-const MAX_SIMULATION_ROUTES = 1200;
+const MAX_SIMULATION_ROUTES = 1800;
 
 const RAIL_LINE_FEATURE_BUDGET = 12000;
 const RAIL_LINE_VERTEX_BUDGET = 1_400_000;
@@ -287,6 +292,16 @@ for (const record of knownRoutes) {
 }
 const maxFrequency = Math.max(1, ...serviceFrequency.values());
 
+// ---------------------------------------------------------------------------
+// Load real 12306 routes from SQLite database
+// ---------------------------------------------------------------------------
+let real12306Routes = [];
+if (DB_12306 && fs.existsSync(DB_12306)) {
+  console.log(`[prepare:data] loading real routes from 12306.db: ${DB_12306}`);
+  real12306Routes = loadRealRoutesFrom12306(DB_12306, stationByName);
+  console.log(`[prepare:data] real 12306 routes loaded: ${real12306Routes.length}`);
+}
+
 // Build the HSR-eligible-stations set: any station that ever appears as
 // origin OR destination of a G/D/C train. Intermediate stops on simulation
 // routes MUST be drawn from this set so the rail-traced A* path stays on
@@ -305,9 +320,11 @@ console.log('[prepare:data] reading OSM rail lines...');
 const osmRailFeatures = readOsmRailFeatures();
 console.log(`[prepare:data] OSM rail features parsed: ${osmRailFeatures.length}`);
 
-console.log('[prepare:data] building rail line dataset for rendering...');
+// The map no longer renders these layers (the Mapbox style includes them),
+// but the OceanBase seed pipeline still loads hsr-rails.geojson into the
+// rail_tracks table, so the full feature collection must be generated.
 const railGeojson = buildRailGeojson(osmRailFeatures);
-console.log(`[prepare:data] rail line features (rendering): ${railGeojson.features.length}`);
+console.log(`[prepare:data] rail line features (OceanBase rail_tracks source): ${railGeojson.features.length}`);
 
 console.log('[prepare:data] building rail network graph (full detail) for path-following geometry...');
 const railNetwork = buildRailNetwork(osmRailFeatures);
@@ -327,8 +344,12 @@ const simulationCandidatesRaw = knownRoutes
     };
   });
 
-console.log(`[prepare:data] simulation candidates pre-dedupe: ${simulationCandidatesRaw.length}`);
-const simulationCandidates = deduplicateByOd(simulationCandidatesRaw);
+// Merge real 12306 routes with synthetic candidates. Real routes get priority
+// because they have actual stop sequences and timings.
+const mergedCandidates = [...real12306Routes, ...simulationCandidatesRaw];
+
+console.log(`[prepare:data] simulation candidates pre-dedupe: ${mergedCandidates.length} (real: ${real12306Routes.length}, synthetic: ${simulationCandidatesRaw.length})`);
+const simulationCandidates = deduplicateByOd(mergedCandidates);
 console.log(`[prepare:data] simulation candidates post-dedupe: ${simulationCandidates.length}`);
 
 const stationLookupForGeometry = createStationSpatialIndex(stations);
@@ -390,6 +411,10 @@ writeJson('route-data.json', {
   routes: simulationRoutes,
   routeRecords: enrichedRouteRecords,
 });
+// The Mapbox style already includes rail and station layers, so the frontend
+// no longer fetches these. They are still written because the OceanBase seed
+// pipeline (scripts/oceanbase_seed.py) loads hsr-rails.geojson into the
+// rail_tracks table for queryable raw rail geometry.
 writeJson('hsr-stations.geojson', stationsGeojson);
 writeJson('hsr-rails.geojson', railGeojson);
 
@@ -399,7 +424,7 @@ console.log(`[prepare:data] known endpoint records: ${knownRoutes.length}`);
 console.log(`[prepare:data] simulation routes: ${simulationRoutes.length}`);
 console.log(`[prepare:data] unique origins: ${new Set(simulationRoutes.map((route) => route.origin)).size}`);
 console.log(`[prepare:data] unique corridors: ${new Set(simulationRoutes.map((route) => route.corridor)).size}`);
-console.log(`[prepare:data] rail line features: ${railGeojson.features.length}`);
+console.log('[prepare:data] GeoJSON rail/station rendering skipped (Mapbox style has them)');
 
 // ============================================================================
 // Route building
@@ -408,25 +433,98 @@ console.log(`[prepare:data] rail line features: ${railGeojson.features.length}`)
 function buildRoute(record, index) {
   const origin = stationByName.get(record.origin);
   const destination = stationByName.get(record.destination);
-  const totalKm = distance(origin, destination) * 1.12;
-  const stopTarget = Math.max(3, Math.min(12, Math.round(totalKm / 145) + 2));
-  // First trace the rail path between origin and destination so intermediate
-  // stop selection can prefer stations close to the actual rail line, not
-  // just the geographic chord.
-  const referencePath = railGeometryBetween(origin, destination);
-  const intermediate = pickIntermediateStops(origin, destination, totalKm, stopTarget, referencePath.coordinates);
-  const stops = [origin, ...intermediate, destination].map((station, stopIndex) => ({
-    id: station.id,
-    name: station.name,
-    province: station.province,
-    city: station.city,
-    lng: station.lng,
-    lat: station.lat,
-    tier: station.tier,
-    simulatedStop: stopIndex !== 0 && stopIndex !== intermediate.length + 1,
-    dwellMinutes: station.tier === 'national-hub' ? 6 : station.tier === 'regional-hub' ? 4 : 2,
-  }));
-  const segments = [];
+
+  let stops;
+  let segments;
+  let provenance;
+
+  if (record.provenance === '12306-real' && record.realStops) {
+    // Use actual stop sequence from 12306 database
+    stops = record.realStops.map((stopRow, stopIndex) => {
+      const station = stationByName.get(stopRow.station_name);
+      return {
+        id: station.id,
+        name: station.name,
+        province: station.province,
+        city: station.city,
+        lng: station.lng,
+        lat: station.lat,
+        tier: station.tier,
+        simulatedStop: false,
+        dwellMinutes: dwellFromLishi(stopRow) || (station.tier === 'national-hub' ? 6 : station.tier === 'regional-hub' ? 4 : 2),
+        arrivalTime: stopRow.arrive_time,
+        departureTime: stopRow.start_time,
+        elapsedTime: stopRow.lishi,
+      };
+    });
+    segments = buildSegmentsFromStops(stops);
+    provenance = 'Real 12306 route with actual ordered stop sequence, arrival/departure times, and rail-traced segment geometry.';
+  } else {
+    const totalKm = distance(origin, destination) * 1.12;
+    const stopTarget = Math.max(3, Math.min(12, Math.round(totalKm / 145) + 2));
+    const referencePath = railGeometryBetween(origin, destination);
+    const intermediate = pickIntermediateStops(origin, destination, totalKm, stopTarget, referencePath.coordinates);
+    stops = [origin, ...intermediate, destination].map((station, stopIndex) => ({
+      id: station.id,
+      name: station.name,
+      province: station.province,
+      city: station.city,
+      lng: station.lng,
+      lat: station.lat,
+      tier: station.tier,
+      simulatedStop: stopIndex !== 0 && stopIndex !== intermediate.length + 1,
+      dwellMinutes: station.tier === 'national-hub' ? 6 : station.tier === 'regional-hub' ? 4 : 2,
+    }));
+    segments = buildSegmentsFromStops(stops);
+    provenance = 'Real train origin/destination; intermediate stops simulation-derived from station geography; geometry path-traced over OSM rail graph when possible.';
+  }
+
+  const key = [record.origin, record.destination].sort().join('|');
+  const routeId = record.provenance === '12306-real'
+    ? record.id
+    : `route-${index}-${record.code}`;
+  const stopSequence = stops.map((stop) => stop.name);
+  const stopSequenceIds = stops.map((stop) => stop.id || stop.name);
+  const stopSequenceHash = hashSequence(stopSequenceIds);
+
+  // Real 12306 routes get a boosted frequency rank so they aren't starved
+  const freqRank = record.provenance === '12306-real'
+    ? Math.max(0.75, (serviceFrequency.get(key) || 1) / maxFrequency)
+    : (serviceFrequency.get(key) || 1) / maxFrequency;
+
+  return {
+    id: routeId,
+    code: record.code,
+    trainNo: record.trainNo,
+    type: record.type,
+    origin: record.origin,
+    destination: record.destination,
+    totalDistanceKm: segments.reduce((sum, segment) => sum + segment.distanceKm, 0),
+    frequencyRank: freqRank,
+    corridor: record.corridor || corridorKey(origin, destination),
+    originProvince: origin.province,
+    destinationProvince: destination.province,
+    provenance,
+    routeContract: {
+      version: 1,
+      routeId,
+      outboundVariantId: `${routeId}:outbound`,
+      returnVariantId: `${routeId}:return`,
+      stopSequence,
+      returnStopSequence: stopSequence.slice().reverse(),
+      stopSequenceHash,
+      source: record.provenance === '12306-real'
+        ? 'ordered route stop sequence from 12306.db'
+        : 'ordered route stop sequence persisted for OceanBase and runtime validation',
+    },
+    stops,
+    segments,
+    geometry: mergeSegmentGeometries(segments),
+  };
+}
+
+function buildSegmentsFromStops(stops) {
+  const segs = [];
   for (let i = 0; i < stops.length - 1; i += 1) {
     const segmentDistance = distance(stops[i], stops[i + 1]) * 1.08;
     const geometry = railGeometryBetween(stops[i], stops[i + 1]);
@@ -434,7 +532,7 @@ function buildRoute(record, index) {
     if (geometry.source === 'rail-traced') geometryStats.railTraced += 1;
     else if (geometry.source === 'hotosm-rail-corridor') geometryStats.railCorridorSampled += 1;
     else geometryStats.straightFallback += 1;
-    segments.push({
+    segs.push({
       from: stops[i].name,
       to: stops[i + 1].name,
       distanceKm: Math.round(segmentDistance),
@@ -446,38 +544,29 @@ function buildRoute(record, index) {
       geometryDistanceKm: geometry.distanceKm ? Math.round(geometry.distanceKm * 10) / 10 : null,
     });
   }
-  const key = [record.origin, record.destination].sort().join('|');
-  const routeId = `route-${index}-${record.code}`;
-  const stopSequence = stops.map((stop) => stop.name);
-  const stopSequenceIds = stops.map((stop) => stop.id || stop.name);
-  const stopSequenceHash = hashSequence(stopSequenceIds);
-  return {
-    id: routeId,
-    code: record.code,
-    trainNo: record.trainNo,
-    type: record.type,
-    origin: record.origin,
-    destination: record.destination,
-    totalDistanceKm: segments.reduce((sum, segment) => sum + segment.distanceKm, 0),
-    frequencyRank: (serviceFrequency.get(key) || 1) / maxFrequency,
-    corridor: record.corridor,
-    originProvince: origin.province,
-    destinationProvince: destination.province,
-    provenance: 'Real train origin/destination; intermediate stops simulation-derived from station geography; geometry path-traced over OSM rail graph when possible.',
-    routeContract: {
-      version: 1,
-      routeId,
-      outboundVariantId: `${routeId}:outbound`,
-      returnVariantId: `${routeId}:return`,
-      stopSequence,
-      returnStopSequence: stopSequence.slice().reverse(),
-      stopSequenceHash,
-      source: 'ordered route stop sequence persisted for OceanBase and runtime validation',
-    },
-    stops,
-    segments,
-    geometry: mergeSegmentGeometries(segments),
-  };
+  return segs;
+}
+
+function dwellFromLishi(stopRow) {
+  // Derive dwell time from arrive_time and start_time if available
+  const arrive = stopRow.arrive_time;
+  const depart = stopRow.start_time;
+  if (!arrive || !depart || arrive === '----' || depart === '----') return null;
+  const a = parseTimeMinutes(arrive);
+  const d = parseTimeMinutes(depart);
+  if (a === null || d === null) return null;
+  const dwell = d - a;
+  return dwell >= 0 && dwell <= 60 ? dwell : null;
+}
+
+function parseTimeMinutes(timeStr) {
+  if (!timeStr || timeStr === '----') return null;
+  const parts = timeStr.split(':');
+  if (parts.length !== 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
 }
 
 function hashSequence(values) {
@@ -555,6 +644,14 @@ function deduplicateByOd(records) {
       byPair.set(key, record);
       continue;
     }
+    // Always prefer real 12306 routes over synthetic ones
+    if (record.provenance === '12306-real' && existing.provenance !== '12306-real') {
+      byPair.set(key, record);
+      continue;
+    }
+    if (existing.provenance === '12306-real' && record.provenance !== '12306-real') {
+      continue;
+    }
     const existingFrequency = serviceFrequency.get(`${existing.origin}|${existing.destination}`) || 1;
     const recordFrequency = serviceFrequency.get(`${record.origin}|${record.destination}`) || 1;
     if (recordFrequency > existingFrequency) byPair.set(key, record);
@@ -598,6 +695,10 @@ function selectDiverseRecords(records, limit) {
 }
 
 function compareRoutePriority(a, b) {
+  // Real 12306 routes always win priority
+  const aReal = a.provenance === '12306-real' ? 1 : 0;
+  const bReal = b.provenance === '12306-real' ? 1 : 0;
+  if (aReal !== bReal) return bReal - aReal;
   const aFrequency = serviceFrequency.get(`${a.origin}|${a.destination}`) || 1;
   const bFrequency = serviceFrequency.get(`${b.origin}|${b.destination}`) || 1;
   return bFrequency - aFrequency || b.distanceKm - a.distanceKm || a.code.localeCompare(b.code, 'zh-Hans-CN');
@@ -642,6 +743,89 @@ function summarizeDiversity(routes) {
     uniqueOriginProvinces: new Set(routes.map((route) => route.originProvince)).size,
     uniqueCorridors: new Set(routes.map((route) => route.corridor)).size,
   };
+}
+
+// ============================================================================
+// Real 12306 route loading from SQLite
+// ============================================================================
+
+function loadRealRoutesFrom12306(dbPath, stationByName) {
+  const { execSync } = require('child_process');
+
+  function queryJson(sql) {
+    try {
+      const output = execSync(
+        `sqlite3 "${dbPath}" ".mode json" "${sql.replace(/"/g, '""')}"`,
+        { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 }
+      );
+      return JSON.parse(output);
+    } catch (err) {
+      console.log(`[prepare:data] sqlite3 query failed: ${err.message}`);
+      return [];
+    }
+  }
+
+  const trainRoutes = queryJson(`
+    SELECT id, train_code, train_class_name, train_no, service_type, end_station_name
+    FROM train_routes
+    WHERE train_class_name IN ('高速', '动车', '城际')
+    ORDER BY id
+  `);
+
+  if (!trainRoutes.length) {
+    console.log('[prepare:data] no train routes found in 12306.db');
+    return [];
+  }
+
+  const routeStations = queryJson(`
+    SELECT train_route_id, station_name, station_order, arrive_time, start_time, lishi
+    FROM route_stations
+    ORDER BY train_route_id, station_order
+  `);
+
+  // Group stations by route
+  const stopsByRoute = new Map();
+  for (const row of routeStations) {
+    const rid = row.train_route_id;
+    if (!stopsByRoute.has(rid)) stopsByRoute.set(rid, []);
+    stopsByRoute.get(rid).push(row);
+  }
+
+  const routes = [];
+  const seenCodes = new Map(); // train_code -> best route (most stops)
+
+  for (const tr of trainRoutes) {
+    const stops = stopsByRoute.get(tr.id) || [];
+    if (stops.length < 2) continue;
+
+    // Check if all stations are known
+    const allKnown = stops.every((s) => stationByName.has(s.station_name));
+    if (!allKnown) continue;
+
+    const typeMap = { '高速': 'G', '动车': 'D', '城际': 'C' };
+    const type = typeMap[tr.train_class_name] || 'G';
+
+    const route = {
+      id: `real12306-${tr.id}`,
+      code: tr.train_code || tr.train_no || `R${tr.id}`,
+      trainNo: tr.train_no || tr.train_code,
+      type,
+      origin: stops[0].station_name,
+      destination: stops[stops.length - 1].station_name,
+      realStops: stops,
+      // Real routes get a high frequency rank so they aren't starved in simulation
+      frequencyRank: 0.85,
+      provenance: '12306-real',
+    };
+
+    // Deduplicate by train_code: keep the route with the most stops
+    const existing = seenCodes.get(route.code);
+    if (!existing || existing.realStops.length < stops.length) {
+      seenCodes.set(route.code, route);
+    }
+  }
+
+  return Array.from(seenCodes.values());
 }
 
 // ============================================================================

@@ -16,7 +16,11 @@ const LEDGER_DIR = process.env.CHINAHSR_LEDGER_DIR || (USE_ORB_OCEANBASE ? path.
 const ENABLE_OB_INGEST = process.env.CHINAHSR_DISABLE_INGEST !== '1' && (Boolean(process.env.OB_PASSWORD) || USE_ORB_OCEANBASE);
 const OCEANBASE_EXPORT_TTL_MS = Number(process.env.CHINAHSR_OCEANBASE_EXPORT_TTL_MS || 300_000);
 const OCEANBASE_EXPORT_MAX_BYTES = Number(process.env.CHINAHSR_OCEANBASE_EXPORT_MAX_BYTES || 30 * 1024 * 1024);
+const PREBUILT_EXPORT_PATH = path.join(ROOT, 'public', 'oceanbase-simulation-data.json');
+const PREBUILT_FRESH_HOURS = Number(process.env.CHINAHSR_PREBUILT_FRESH_HOURS || 48);
+const LEDGER_RETRY_INTERVAL_MS = Number(process.env.CHINAHSR_LEDGER_RETRY_MS || 90_000);
 let oceanbaseExportCache = null;
+let ledgerSweepInFlight = false;
 
 if (!fs.existsSync(path.join(DIST, 'index.html'))) {
   console.error('[serve] dist/index.html is missing. Run npm run build first.');
@@ -124,20 +128,62 @@ function handleIngestBookings(request, response) {
 
 async function handleOceanBaseSimulationData(response) {
   response.setHeader('Content-Type', 'application/json; charset=utf-8');
+  response.setHeader('Cache-Control', 'no-cache');
+  // A fresh pre-generated export avoids needing a live OceanBase connection.
+  const prebuilt = readPrebuiltOceanBaseExport();
+  if (prebuilt && prebuilt.ageHours <= PREBUILT_FRESH_HOURS) {
+    response.setHeader('X-ChinaHSR-Data-Source', 'prebuilt-12306-export');
+    response.end(prebuilt.payload);
+    return;
+  }
   try {
     const payload = await oceanbaseSimulationData();
-    response.setHeader('Cache-Control', 'no-cache');
     response.end(payload);
   } catch (error) {
-    const fallback = readOceanBaseExportFallback(error);
-    if (fallback) {
-      response.setHeader('X-ChinaHSR-OceanBase-Fallback', 'file');
-      response.end(fallback);
+    // A stale OceanBase-derived export is still the same dataset the app
+    // expects — strictly better than 503ing into the static-JSON fallback.
+    if (prebuilt) {
+      console.error(`[serve] live OceanBase export failed (${error.message}); serving prebuilt export (${Math.round(prebuilt.ageHours)}h old).`);
+      response.setHeader('X-ChinaHSR-OceanBase-Fallback', 'stale-prebuilt');
+      response.end(prebuilt.payload);
       return;
     }
     response.statusCode = 503;
     console.error('[serve] OceanBase export failed:', error.message);
     response.end(JSON.stringify({ ok: false, reason: 'OceanBase data export unavailable. Please try again later.' }));
+  }
+}
+
+function readPrebuiltOceanBaseExport() {
+  if (!fs.existsSync(PREBUILT_EXPORT_PATH)) return null;
+  const stats = fs.statSync(PREBUILT_EXPORT_PATH);
+  const ageHours = (Date.now() - stats.mtimeMs) / 3600000;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PREBUILT_EXPORT_PATH, 'utf8'));
+    if (!Array.isArray(parsed.routes) || !Array.isArray(parsed.stations)) return null;
+    return {
+      ageHours,
+      payload: JSON.stringify({ ok: true, source: '12306.db-prebuilt', exportAgeHours: Math.round(ageHours * 10) / 10, ...parsed }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a successful live export so the prebuilt cache refreshes itself:
+ * the next server start (or request inside the freshness window) serves the
+ * new file without touching OceanBase again.
+ */
+function persistPrebuiltExport(payload) {
+  const tempPath = `${PREBUILT_EXPORT_PATH}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tempPath, payload, 'utf8');
+    fs.renameSync(tempPath, PREBUILT_EXPORT_PATH);
+    console.log('[serve] refreshed prebuilt OceanBase export from live database.');
+  } catch (error) {
+    console.error('[serve] failed to refresh prebuilt export:', error.message);
+    try { fs.unlinkSync(tempPath); } catch { /* already gone */ }
   }
 }
 
@@ -152,6 +198,7 @@ async function oceanbaseSimulationData() {
     try {
       const payload = await runJsonExport(attempt);
       oceanbaseExportCache = { payload, expiresAt: now + OCEANBASE_EXPORT_TTL_MS };
+      persistPrebuiltExport(payload);
       return payload;
     } catch (error) {
       errors.push(`${attempt.label}: ${error.message}`);
@@ -165,6 +212,9 @@ function buildOceanBaseExportAttempts() {
   const includeAll = process.env.CHINAHSR_OCEANBASE_INCLUDE_ALL_CLASSES === '1';
   const directArgs = [path.join(ROOT, 'scripts', 'export_oceanbase_simulation_data.py'), '--stdout', '--route-limit', routeLimit];
   if (includeAll) directArgs.push('--include-all-classes');
+  // Local OceanBase Desktop tenants run with an empty root password; the
+  // export script refuses an empty OB_PASSWORD without this explicit opt-in.
+  if (!process.env.OB_PASSWORD) directArgs.push('--allow-empty-password');
 
   const direct = { label: 'direct', command: process.env.CHINAHSR_PYTHON || 'python3', args: directArgs, env: process.env };
   const explicitOrb = process.env.CHINAHSR_OCEANBASE_VIA_ORB === '1';
@@ -179,7 +229,7 @@ function buildOceanBaseExportAttempts() {
     const orbArgs = ['-m', process.env.ORB_VM_NAME || 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbExportCommand({ routeLimit, includeAll })];
     const orb = { label: 'orb', command: orbBin, args: orbArgs, env: process.env };
     if (explicitOrb) return [orb, direct];
-    return isLocalHost(host) ? [orb, direct] : [direct, orb];
+    return isLocalHost(process.env.OB_HOST || '127.0.0.1') ? [orb, direct] : [direct, orb];
   }
   return [direct];
 }
@@ -196,6 +246,7 @@ function buildOrbExportCommand({ routeLimit, includeAll }) {
     `--route-limit ${shellQuote(routeLimit || '0')}`,
   ];
   if (includeAll) parts.push('--include-all-classes');
+  if (!process.env.CHINAHSR_ORB_OB_PASSWORD) parts.push('--allow-empty-password');
   return `${parts[0]} && ${parts.slice(1, 6).join(' ')} ${parts.slice(6).join(' ')}`;
 }
 
@@ -223,6 +274,8 @@ function runJsonExport(attempt) {
     });
     child.on('error', (error) => reject(error));
     child.on('close', (code) => {
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
       if (code !== 0) {
         reject(new Error((stderr || `exit ${code}`).trim().slice(0, 1000)));
         return;
@@ -241,24 +294,7 @@ function runJsonExport(attempt) {
   });
 }
 
-function readOceanBaseExportFallback(error) {
-  const fallbackPath = path.join(ROOT, 'public', 'oceanbase-simulation-data.json');
-  if (!fs.existsSync(fallbackPath)) return null;
-  const stats = fs.statSync(fallbackPath);
-  const ageHours = (Date.now() - stats.mtimeMs) / 3600000;
-  if (ageHours > 24) {
-    console.error(`[serve] fallback JSON is stale (${Math.round(ageHours)}h old); skipping.`);
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(fallbackPath, 'utf8'));
-    return JSON.stringify({ ok: true, fallback: 'public/oceanbase-simulation-data.json', fallbackReason: error.message, ...parsed });
-  } catch {
-    return null;
-  }
-}
-
-function runIngestProcess(filePath, count) {
+function runIngestProcess(filePath, count, onExit) {
   const child = USE_ORB_OCEANBASE
     ? spawn(process.env.ORB_BIN || '/opt/homebrew/bin/orb', ['-m', process.env.ORB_VM_NAME || 'oceanbase-desktop', '-u', 'root', 'bash', '-lc', buildOrbIngestCommand(filePath)], {
         env: process.env,
@@ -272,11 +308,48 @@ function runIngestProcess(filePath, count) {
   child.stderr.on('data', (chunk) => process.stderr.write(`[ledger ${count}] ${chunk}`));
   child.on('error', (error) => {
     console.error('[serve] failed to spawn booking ingest:', error.message);
+    onExit?.(error);
   });
+  child.on('close', (code) => onExit?.(code === 0 ? null : new Error(`ingest exited ${code}`)));
+}
+
+/**
+ * Re-dispatch ledger batches whose first ingest attempt failed (the Python
+ * ingest deletes its input on success, so any file older than a couple of
+ * minutes is a stranded batch). Inserts are idempotent upserts keyed by
+ * ticket_id, so re-running a file is safe.
+ */
+function sweepPendingLedger() {
+  if (ledgerSweepInFlight) return;
+  const cutoff = Date.now() - 120_000;
+  let files;
+  try {
+    files = fs.readdirSync(LEDGER_DIR)
+      .filter((name) => name.endsWith('.ndjson'))
+      .map((name) => ({ name, path: path.join(LEDGER_DIR, name), mtimeMs: fs.statSync(path.join(LEDGER_DIR, name)).mtimeMs }))
+      .filter((file) => file.mtimeMs < cutoff)
+      .sort((a, b) => a.mtimeMs - b.mtimeMs)
+      .slice(0, 3);
+  } catch (error) {
+    console.error('[serve] ledger sweep failed to list pending files:', error.message);
+    return;
+  }
+  if (!files.length) return;
+  ledgerSweepInFlight = true;
+  console.log(`[serve] retrying ${files.length} stranded ledger batch(es).`);
+  let remaining = files.length;
+  for (const file of files) {
+    runIngestProcess(file.path, `retry:${file.name}`, () => {
+      remaining -= 1;
+      if (remaining === 0) ledgerSweepInFlight = false;
+    });
+  }
 }
 
 function buildDirectIngestArgs(filePath) {
-  return [path.join(ROOT, 'scripts', 'oceanbase_booking_ingest.py'), '--input', filePath];
+  const args = [path.join(ROOT, 'scripts', 'oceanbase_booking_ingest.py'), '--input', filePath];
+  if (!process.env.OB_PASSWORD) args.push('--allow-empty-password');
+  return args;
 }
 
 function buildOrbIngestCommand(filePath) {
@@ -290,7 +363,8 @@ function buildOrbIngestCommand(filePath) {
     `OB_PASSWORD=${shellQuote(process.env.CHINAHSR_ORB_OB_PASSWORD || '')}`,
     'python3 scripts/oceanbase_booking_ingest.py --input',
     shellQuote(filePath),
-  ].join(' ');
+    process.env.CHINAHSR_ORB_OB_PASSWORD ? '' : '--allow-empty-password',
+  ].join(' ').trim();
 }
 
 function ledgerStats() {
@@ -348,6 +422,11 @@ server.listen(PORT, HOST, () => {
   console.log(`[serve] China HSR Simulation available at http://${HOST}:${PORT}/`);
   console.log(`[serve] booking ledger directory: ${LEDGER_DIR} (OceanBase ingest: ${ENABLE_OB_INGEST ? 'enabled' : 'disabled'})`);
 });
+
+if (ENABLE_OB_INGEST) {
+  const sweepTimer = setInterval(sweepPendingLedger, LEDGER_RETRY_INTERVAL_MS);
+  sweepTimer.unref?.();
+}
 
 function contentType(filePath) {
   const ext = path.extname(filePath);
