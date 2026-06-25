@@ -5,9 +5,22 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
+const mysql = require('mysql2/promise');
 
 const ROOT = path.resolve(__dirname, '..');
 loadEnvFile(path.join(ROOT, '.env'));
+
+const pool = mysql.createPool({
+  host: process.env.OB_HOST || '127.0.0.1',
+  port: Number(process.env.OB_PORT || 2881),
+  user: process.env.OB_USER || 'root',
+  password: process.env.OB_PASSWORD || '',
+  database: process.env.OB_DATABASE || 'chinahsr',
+  connectionLimit: 5,
+  idleTimeout: 30000,
+  connectTimeout: 1000, // Fast connection failure check
+});
+
 const DIST = path.join(ROOT, 'dist');
 const PORT = Number(process.env.PORT || 5174);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -21,6 +34,7 @@ const PREBUILT_FRESH_HOURS = Number(process.env.CHINAHSR_PREBUILT_FRESH_HOURS ||
 const LEDGER_RETRY_INTERVAL_MS = Number(process.env.CHINAHSR_LEDGER_RETRY_MS || 90_000);
 let oceanbaseExportCache = null;
 let ledgerSweepInFlight = false;
+let isExportingInBackground = false;
 
 if (!fs.existsSync(path.join(DIST, 'index.html'))) {
   console.error('[serve] dist/index.html is missing. Run npm run build first.');
@@ -28,7 +42,7 @@ if (!fs.existsSync(path.join(DIST, 'index.html'))) {
 }
 fs.mkdirSync(LEDGER_DIR, { recursive: true });
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
   const parsed = new URL(request.url || '/', `http://${HOST}:${PORT}`);
   const pathname = decodeURIComponent(parsed.pathname || '/');
 
@@ -39,7 +53,22 @@ const server = http.createServer((request, response) => {
 
   if (request.method === 'GET' && pathname === '/healthz') {
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ ok: true, ledgerIngest: ENABLE_OB_INGEST, ledgerDir: LEDGER_DIR, ledger: ledgerStats() }));
+    let dbOnline = false;
+    let dbBookings = 0;
+    try {
+      const [rows] = await pool.query('SELECT COUNT(*) as count FROM bookings');
+      dbOnline = true;
+      dbBookings = rows[0].count;
+    } catch (err) {
+      // DB offline or table not seeded yet
+    }
+    response.end(JSON.stringify({ 
+      ok: true, 
+      ledgerIngest: ENABLE_OB_INGEST, 
+      ledgerDir: LEDGER_DIR, 
+      ledger: ledgerStats(),
+      oceanbase: { online: dbOnline, bookings: dbBookings }
+    }));
     return;
   }
 
@@ -143,29 +172,76 @@ function handleIngestBookings(request, response) {
 async function handleOceanBaseSimulationData(response) {
   response.setHeader('Content-Type', 'application/json; charset=utf-8');
   response.setHeader('Cache-Control', 'no-cache');
-  // A fresh pre-generated export avoids needing a live OceanBase connection.
+
   const prebuilt = readPrebuiltOceanBaseExport();
-  if (prebuilt && prebuilt.ageHours <= PREBUILT_FRESH_HOURS) {
-    response.setHeader('X-ChinaHSR-Data-Source', 'prebuilt-12306-export');
-    response.end(prebuilt.payload);
-    return;
-  }
+
+  // Fast check if database is online using our connection pool
+  let dbOnline = false;
   try {
-    const payload = await oceanbaseSimulationData();
-    response.end(payload);
-  } catch (error) {
-    // A stale OceanBase-derived export is still the same dataset the app
-    // expects — strictly better than 503ing into the static-JSON fallback.
+    const conn = await pool.getConnection();
+    conn.release();
+    dbOnline = true;
+  } catch (err) {
+    // Database connection failed
+  }
+
+  // If database is offline, serve cached prebuilt immediately if we have it
+  if (!dbOnline) {
     if (prebuilt) {
-      console.error(`[serve] live OceanBase export failed (${error.message}); serving prebuilt export (${Math.round(prebuilt.ageHours)}h old).`);
+      console.warn(`[serve] OceanBase offline; serving cached export (${Math.round(prebuilt.ageHours)}h old).`);
       response.setHeader('X-ChinaHSR-OceanBase-Fallback', 'stale-prebuilt');
       response.end(prebuilt.payload);
       return;
     }
     response.statusCode = 503;
-    console.error('[serve] OceanBase export failed:', error.message);
-    response.end(JSON.stringify({ ok: false, reason: 'OceanBase data export unavailable. Please try again later.' }));
+    response.end(JSON.stringify({ ok: false, reason: 'OceanBase database is offline and no cached prebuilt data is available.' }));
+    return;
   }
+
+  // Database is online:
+  if (prebuilt) {
+    // If the cache is still fresh, serve it
+    if (prebuilt.ageHours <= PREBUILT_FRESH_HOURS) {
+      response.setHeader('X-ChinaHSR-Data-Source', 'prebuilt-12306-export');
+      response.end(prebuilt.payload);
+      return;
+    }
+
+    // Cache is expired: serve it immediately to avoid blocking, and trigger background refresh
+    response.setHeader('X-ChinaHSR-Data-Source', 'prebuilt-12306-export');
+    response.setHeader('X-ChinaHSR-OceanBase-Fallback', 'stale-prebuilt-refreshing');
+    response.end(prebuilt.payload);
+
+    if (!isExportingInBackground) {
+      triggerBackgroundExport();
+    }
+    return;
+  }
+
+  // No prebuilt exists and DB is online: must perform a synchronous export
+  try {
+    const payload = await oceanbaseSimulationData();
+    response.end(payload);
+  } catch (error) {
+    response.statusCode = 503;
+    response.end(JSON.stringify({ ok: false, reason: `OceanBase data export failed: ${error.message}` }));
+  }
+}
+
+function triggerBackgroundExport() {
+  if (isExportingInBackground) return;
+  isExportingInBackground = true;
+  console.log('[serve] starting background OceanBase export refresh...');
+  oceanbaseSimulationData()
+    .then(() => {
+      console.log('[serve] background OceanBase export refresh completed.');
+    })
+    .catch((err) => {
+      console.error('[serve] background OceanBase export refresh failed:', err.message);
+    })
+    .finally(() => {
+      isExportingInBackground = false;
+    });
 }
 
 function readPrebuiltOceanBaseExport() {
@@ -459,3 +535,17 @@ function contentType(filePath) {
     '.webm': 'video/webm',
   }[ext] || 'application/octet-stream';
 }
+
+process.on('SIGTERM', () => {
+  console.log('[serve] received SIGTERM, closing pool and server...');
+  pool.end().catch(() => {}).finally(() => {
+    server.close(() => process.exit(0));
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('[serve] received SIGINT, closing pool and server...');
+  pool.end().catch(() => {}).finally(() => {
+    server.close(() => process.exit(0));
+  });
+});

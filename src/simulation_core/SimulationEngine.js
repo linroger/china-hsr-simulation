@@ -50,6 +50,7 @@ export class SimulationEngine {
     this.delayGraph = buildDelayGraph(routes);
     this.platformOccupancy = new Map();
     this.activeScenarios = [];
+    this.scenarioHistory = [];
     this.scenarioCounter = 0;
     this.autoDisturbances = true;
     this._lastDisturbanceRollMinute = null;
@@ -98,7 +99,6 @@ export class SimulationEngine {
   }
 
   createTrain(route, index, serviceIndex = 0, serviceCount = 1, calendar = this.calendar) {
-    const inventory = new SeatInventory(route.stops);
     const departureMinute = calendar.dayIndex * 1440 + scheduledDepartureMinute(route, serviceIndex, serviceCount, index);
     const plannedRuntimes = route.segments.map((segment, segmentIndex) => plannedSegmentMinutes(route, segment, segmentIndex));
     const segmentMinutes = route.segments.map((segment, segmentIndex) => realisticSegmentMinutes(route, segment, segmentIndex, index, serviceIndex, calendar));
@@ -107,7 +107,8 @@ export class SimulationEngine {
     const delayMinutes = Math.max(0, Math.round(segmentMinutes.reduce((sum, minutes) => sum + minutes, 0) - plannedRuntimes.reduce((sum, minutes) => sum + minutes, 0)));
     const outboundVariantId = route.routeContract?.outboundVariantId || `${route.id}:outbound`;
     const returnVariantId = route.routeContract?.returnVariantId || `${route.id}:return`;
-    return {
+
+    const train = {
       id: `${dayPrefix}${route.id}${serviceSuffix}`,
       routeId: route.id,
       routeVariantId: outboundVariantId,
@@ -134,7 +135,6 @@ export class SimulationEngine {
       frequencyRank: route.frequencyRank,
       servicesForRoute: serviceCount,
       serviceIndexForRoute: serviceIndex,
-      inventory,
       departureMinute,
       segmentMinutes,
       plannedSegmentMinutes: plannedRuntimes,
@@ -149,7 +149,29 @@ export class SimulationEngine {
       completed: false,
       bookings: [],
       algorithmMetrics: [],
+
+      _inventory: null,
+      get inventory() {
+        if (this.completed) {
+          // Return a minimal mock/dummy inventory to prevent TypeErrors in case of
+          // any unexpected post-completion reads, while still reclaiming almost all memory.
+          return {
+            occupancyForSegment: () => ({ loadFactor: 0, occupied: 0, capacity: 556 }),
+            occupiedOnSegment: () => 0,
+            averageLoadFactor: () => 0,
+            releaseTicket: () => 0,
+          };
+        }
+        if (!this._inventory) {
+          this._inventory = new SeatInventory(this.stops);
+        }
+        return this._inventory;
+      },
+      set inventory(val) {
+        this._inventory = val;
+      }
     };
+    return train;
   }
 
   preloadDemand() {
@@ -269,6 +291,8 @@ export class SimulationEngine {
           train.status = 'completed';
           train.currentSegmentIndex = Math.max(0, (train.segmentMinutes?.length || 1) - 1);
           train.segmentProgress = 1;
+          train._inventory = null;
+          train.bookings = [];
         }
       }
       this.stop();
@@ -293,6 +317,12 @@ export class SimulationEngine {
         for (const scenario of this.activeScenarios) {
           if (this.nowMinutes >= scenario.untilMinute) {
             this.logEvent('scenario', `${scenario.label} cleared after affecting ${scenario.appliedTrainIds?.size || 0} trains.`);
+            const historyItem = this.scenarioHistory.find((item) => item.id === scenario.id);
+            if (historyItem) {
+              historyItem.status = 'expired';
+              historyItem.endMinute = this.nowMinutes;
+              historyItem.appliedCount = scenario.appliedTrainIds?.size || 0;
+            }
           }
         }
         this.activeScenarios = this.activeScenarios.filter((scenario) => this.nowMinutes < scenario.untilMinute);
@@ -520,6 +550,8 @@ export class SimulationEngine {
       train.status = 'completed';
       train.currentSegmentIndex = train.segmentMinutes.length - 1;
       train.segmentProgress = 1;
+      train._inventory = null;
+      train.bookings = [];
       this.logEvent('arrival', `${train.code} completed ${train.origin} to ${train.destination}.`);
       this.bookingOptionsDirty = true;
       return;
@@ -970,6 +1002,17 @@ export class SimulationEngine {
       trains: visibleTrains,
       bookingOptions,
       network: this._networkCache,
+      scenarioHistory: this.scenarioHistory.map(s => ({
+        id: s.id,
+        type: s.type,
+        label: s.label,
+        status: s.status,
+        startMinute: s.startMinute,
+        untilMinute: s.untilMinute,
+        durationHours: s.durationHours,
+        appliedCount: s.appliedCount,
+        auto: s.auto,
+      })),
     };
   }
 
@@ -1057,6 +1100,23 @@ export class SimulationEngine {
     const id = `scenario-${this.scenarioCounter}`;
     const durationHours = params.durationHours || spec.durationHours || 3;
     const untilMinute = this.nowMinutes + durationHours * 60;
+
+    const historyItem = {
+      id,
+      type: spec.kind || 'demand',
+      label: spec.label,
+      status: 'active',
+      startMinute: this.nowMinutes,
+      untilMinute,
+      durationHours,
+      appliedCount: 0,
+      auto: Boolean(params.auto)
+    };
+
+    if (this.scenarioHistory.length >= 50) {
+      this.scenarioHistory.shift();
+    }
+    this.scenarioHistory.push(historyItem);
 
     if (spec.kind === 'demand') {
       const scenario = {
@@ -1441,7 +1501,7 @@ function incrementRaw(map, key, train) {
   value.trains += 1;
   if (train.status === 'running') value.active += 1;
   const segmentIndex = Math.min(Math.max(0, train.currentSegmentIndex || 0), Math.max(0, (train.segments?.length || 1) - 1));
-  value.passengers += train.inventory.occupiedOnSegment(segmentIndex) || 0;
+  value.passengers += train.status === 'completed' ? 0 : (train.inventory.occupiedOnSegment(segmentIndex) || 0);
 }
 
 function serializeTrain(train, nowMinutes) {
@@ -1452,7 +1512,9 @@ function serializeTrain(train, nowMinutes) {
   const to = train.stops[displaySegmentIndex + 1] || from;
   const segment = train.segments[displaySegmentIndex];
   const coords = interpolateLine(segment?.geometry, segmentProgress) || interpolateCoord(from, to, segmentProgress);
-  const activeLoad = train.inventory.occupancyForSegment(safeSegmentIndex);
+  const activeLoad = train.status === 'completed'
+    ? { loadFactor: 0, occupied: 0, capacity: 556 }
+    : train.inventory.occupancyForSegment(safeSegmentIndex);
   return {
     id: train.id,
     code: train.code,

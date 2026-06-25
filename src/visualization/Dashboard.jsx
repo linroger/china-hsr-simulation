@@ -162,6 +162,43 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
         </div>
       </section>
 
+      <section className="chart-grid">
+        <div className="panel" style={{ gridColumn: 'span 2' }}>
+          <h2>Disruption & Scenario Logs</h2>
+          <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {(!snapshot.scenarioHistory || snapshot.scenarioHistory.length === 0) ? (
+              <span style={{ color: '#64748b', fontStyle: 'italic', fontSize: '13px' }}>No disruptions or scenarios recorded.</span>
+            ) : (
+              snapshot.scenarioHistory.map((s, idx) => (
+                <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', background: 'rgba(15,23,42,0.6)', border: '1px solid #1e293b', borderRadius: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className={`scenario-tag scenario-${s.type}`} style={{ margin: 0 }}>
+                      {s.label}
+                    </span>
+                    <span style={{ color: '#94a3b8', fontSize: '12px' }}>
+                      {s.auto ? '(Auto Disturbance)' : '(Manual)'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '13px' }}>
+                    <span style={{ color: s.status === 'active' ? '#ef4444' : '#64748b', fontWeight: s.status === 'active' ? 'bold' : 'normal' }}>
+                      {s.status === 'active' ? 'Active' : 'Expired'}
+                    </span>
+                    <span style={{ color: '#8ea3bd' }}>
+                      Duration: {s.durationHours}h
+                    </span>
+                    {s.type !== 'demand' && (
+                      <span style={{ color: '#8ea3bd' }}>
+                        Affected: {s.appliedCount || 0} trains
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </section>
+
       {annual && (
         <section className="chart-grid">
           <div className="panel">
