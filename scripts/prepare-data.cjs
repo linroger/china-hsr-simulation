@@ -961,16 +961,15 @@ function buildRailNetwork(osmFeatures) {
       const cellY = Math.floor(lat / lookupCellSize);
       let best = -1;
       let bestKm = maxKm;
+      let firstHitRadius = -1;
       const maxRadius = Math.ceil(maxKm / 4);
       for (let radius = 0; radius <= maxRadius; radius += 1) {
-        let foundAny = false;
         for (let dx = -radius; dx <= radius; dx += 1) {
           for (let dy = -radius; dy <= radius; dy += 1) {
             if (radius > 0 && Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
             const key = `${cellX + dx}:${cellY + dy}`;
             const bucket = lookupCells.get(key);
             if (!bucket) continue;
-            foundAny = true;
             for (const nodeId of bucket) {
               const node = nodes[nodeId];
               const km = distance({ lng, lat }, node);
@@ -981,7 +980,12 @@ function buildRailNetwork(osmFeatures) {
             }
           }
         }
-        if (best >= 0 && foundAny) break;
+        // A node found in this square ring may be a far corner; an unscanned
+        // node one ring out can be Euclidean-closer. Scan exactly one extra
+        // ring after the first hit before settling, instead of breaking
+        // immediately (which biased snapping toward sub-optimal nodes).
+        if (best >= 0 && firstHitRadius < 0) firstHitRadius = radius;
+        if (firstHitRadius >= 0 && radius > firstHitRadius) break;
       }
       return best >= 0 ? { id: best, km: bestKm } : null;
     },
@@ -1124,12 +1128,16 @@ function capVertexCount(coords, maxVertices) {
   // Uniform spacing alone can discard critical curvature points.
   const importance = [];
   for (let i = 1; i < coords.length - 1; i += 1) {
+    // Coordinates are [lng, lat] arrays — index positionally. (The previous
+    // code read .lng/.lat on arrays, so every score was NaN→0, silently
+    // disabling the curvature-aware selection and degrading it to the
+    // even-spacing fill below.)
     const prev = coords[i - 1];
     const curr = coords[i];
     const next = coords[i + 1];
     // Angle deviation from straight line (0 = straight, π = U-turn)
-    const d1 = { lng: curr.lng - prev.lng, lat: curr.lat - prev.lat };
-    const d2 = { lng: next.lng - curr.lng, lat: next.lat - curr.lat };
+    const d1 = { lng: curr[0] - prev[0], lat: curr[1] - prev[1] };
+    const d2 = { lng: next[0] - curr[0], lat: next[1] - curr[1] };
     const len1 = Math.hypot(d1.lng, d1.lat);
     const len2 = Math.hypot(d2.lng, d2.lat);
     let angle = 0;
@@ -1139,7 +1147,7 @@ function capVertexCount(coords, maxVertices) {
     }
     // Also prefer vertices that are far from the chord connecting neighbors
     // (significant deviation from straight line)
-    const chord = { lng: next.lng - prev.lng, lat: next.lat - prev.lat };
+    const chord = { lng: next[0] - prev[0], lat: next[1] - prev[1] };
     const chordLen = Math.hypot(chord.lng, chord.lat);
     let deviation = 0;
     if (chordLen > 1e-12) {

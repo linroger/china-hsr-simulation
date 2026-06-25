@@ -1,0 +1,63 @@
+name: Deploy live demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Allow the workflow to publish to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent Pages deployment; cancel superseded runs.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Build (Pages base path + Mapbox token)
+        env:
+          # Project Pages are served under /<repo>/, so the bundle must be built
+          # with a matching base path; all runtime fetches use import.meta.env.BASE_URL.
+          BASE_PATH: /china-hsr-simulation/
+          # Public pk. token stored as a repo Actions secret (never committed).
+          # If the secret is unset, HSRMap falls back to a tokenless MapLibre basemap.
+          VITE_MAPBOX_TOKEN: ${{ secrets.VITE_MAPBOX_TOKEN }}
+          # Standard Mapbox dark style; the rail network + stations are drawn in
+          # the app from the committed GeoJSON, so the map is self-contained.
+          VITE_MAPBOX_STYLE: mapbox://styles/mapbox/dark-v11
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

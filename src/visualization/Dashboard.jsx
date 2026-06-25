@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { CalendarDays, CircleDollarSign, CloudLightning, Cpu, Database, Gauge, Snowflake, Timer, TrainFront, TrendingUp, Users, Wind, Wrench } from 'lucide-react';
 
@@ -14,6 +14,14 @@ export default function Dashboard({ snapshot, speed, onSpeedChange, yearlySummar
   const trains = snapshot.trains || [];
   const [scenarioPending, setScenarioPending] = useState('');
   const [scenarioMessage, setScenarioMessage] = useState('');
+
+  // Auto-dismiss the scenario feedback so stale "injected"/error text doesn't
+  // linger forever. Re-runs (and cancels) whenever the message changes.
+  useEffect(() => {
+    if (!scenarioMessage) return undefined;
+    const timer = setTimeout(() => setScenarioMessage(''), 4000);
+    return () => clearTimeout(timer);
+  }, [scenarioMessage]);
 
   async function handleScenario(type, label) {
     if (!onInjectScenario || scenarioPending) return;

@@ -75,12 +75,26 @@ const server = http.createServer((request, response) => {
   const ext = path.extname(filePath);
   const compressible = ['.json', '.geojson', '.js', '.css', '.html', '.svg', '.txt'].includes(ext);
 
+  // Attach an error handler before piping: a mid-read failure (file deleted,
+  // EMFILE, disk error) would otherwise emit an unhandled 'error' on the stream
+  // and crash the whole process.
+  const stream = fs.createReadStream(filePath);
+  stream.on('error', (streamError) => {
+    console.error('[serve] stream error:', streamError.message);
+    if (!response.headersSent) {
+      response.statusCode = 500;
+      response.end('Internal server error');
+    } else {
+      response.destroy(streamError);
+    }
+  });
+
   if (compressible && acceptEncoding.includes('gzip')) {
     response.setHeader('Content-Encoding', 'gzip');
     response.setHeader('Vary', 'Accept-Encoding');
-    fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(response);
+    stream.pipe(zlib.createGzip()).pipe(response);
   } else {
-    fs.createReadStream(filePath).pipe(response);
+    stream.pipe(response);
   }
 });
 

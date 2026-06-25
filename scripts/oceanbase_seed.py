@@ -293,7 +293,7 @@ SCHEMA_SQL = [
       destination_index INT,
       seat_class VARCHAR(32),
       seat_count INT,
-      seats_json VARCHAR(512),
+      seats_json TEXT,
       price DECIMAL(12,2),
       distance_km INT,
       booked_at_minute INT,

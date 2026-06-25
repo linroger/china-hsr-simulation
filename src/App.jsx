@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Gauge, Map, ReceiptText, TrainFront } from 'lucide-react';
 import { SimulationWorkerClient } from './simulation_core/SimulationWorkerClient.js';
+import { withBase } from './basePath.js';
 import HSRMap from './visualization/HSRMap.jsx';
 const Dashboard = lazy(() => import('./visualization/Dashboard.jsx'));
 const BookingPanel = lazy(() => import('./visualization/BookingPanel.jsx'));
@@ -21,8 +22,8 @@ export default function App() {
       try {
         setLoading('Loading real 12306 route data...');
         const [oceanbaseData, annualSummary] = await Promise.all([
-          fetchOptionalJson('/api/oceanbase-simulation-data'),
-          fetchOptionalJson('/oceanbase-yearly-summary.json'),
+          fetchOptionalJson(withBase('api/oceanbase-simulation-data')),
+          fetchOptionalJson(withBase('oceanbase-yearly-summary.json')),
         ]);
         const { stationData, routeData, source } = oceanbaseData?.routes?.length && oceanbaseData?.stations?.length
           ? {
@@ -47,7 +48,7 @@ export default function App() {
           stations: stationData.stations,
           routes: routeData.routes,
           speed,
-          ledgerEndpoint: '/ingest-bookings',
+          ledgerEndpoint: withBase('ingest-bookings'),
         });
         await worker.start();
         if (cancelled) return;
@@ -76,10 +77,10 @@ export default function App() {
   }, []);
 
   const bookTrip = useCallback(async (payload) => {
-    const result = await workerRef.current?.bookTrip(payload);
-    const nextSnapshot = await workerRef.current?.snapshot();
-    if (nextSnapshot) setSnapshot(nextSnapshot);
-    return result;
+    // The worker already emits a full 'booking' snapshot through onSnapshot after
+    // a successful booking, so an extra worker.snapshot() round-trip just builds
+    // and structured-clones a second full snapshot for nothing.
+    return workerRef.current?.bookTrip(payload);
   }, []);
 
   const injectScenario = useCallback((scenarioType, params = {}) => {
@@ -143,8 +144,8 @@ export default function App() {
 
 async function loadStaticSimulationData() {
   const [stationsResponse, routesResponse] = await Promise.all([
-    fetch('/station-data.json'),
-    fetch('/route-data.json'),
+    fetch(withBase('station-data.json')),
+    fetch(withBase('route-data.json')),
   ]);
   if (!stationsResponse.ok || !routesResponse.ok) {
     throw new Error('Generated data is missing. Run ./init.sh or npm run prepare:data first.');

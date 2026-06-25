@@ -328,6 +328,10 @@ def build_simulation_payload(
 
     for route_id in sorted(route_rows):
         route_row = route_rows[route_id]
+        # Define route_code up front: the coordinate-correction log below
+        # references it, so assigning it only later raised UnboundLocalError
+        # whenever a route had a corrected station coordinate.
+        route_code = route_row.get("train_code") or route_row.get("train_no") or f"R{route_id}"
         train_type = infer_train_type(route_row)
         class_counts[train_type] += 1
         if not include_all_classes and train_type not in {"G", "D", "C"}:
@@ -458,7 +462,6 @@ def build_simulation_payload(
         if corrected_station_count:
             print(f"[oceanbase:export] route {route_code}: corrected {corrected_station_count} station coordinate(s)", file=sys.stderr)
 
-        route_code = route_row.get("train_code") or route_row.get("train_no") or f"R{route_id}"
         train_no = route_row.get("train_no") or ""
         fares = train_fares.get(train_no, {})
         route = {

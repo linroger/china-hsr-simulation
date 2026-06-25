@@ -17,6 +17,16 @@ export function priceQuote({
 }) {
   const config = SEAT_CLASSES[seatClass];
   if (!config) throw new Error(`Unknown seat class: ${seatClass}`);
+  // Fail fast on bad numeric inputs instead of silently returning a NaN price.
+  if (!Number.isFinite(distanceKm) || distanceKm < 0) {
+    throw new Error(`priceQuote: distanceKm must be a non-negative finite number, got ${distanceKm}`);
+  }
+  if (distanceKm === 0 && !(baseFare != null && baseFare > 0)) {
+    throw new Error('priceQuote: a distanceKm of 0 requires an explicit positive baseFare');
+  }
+  if (!Number.isFinite(loadFactor) || !Number.isFinite(hoursToDeparture)) {
+    throw new Error(`priceQuote: loadFactor and hoursToDeparture must be finite (loadFactor=${loadFactor}, hoursToDeparture=${hoursToDeparture})`);
+  }
   let computedBaseFare;
   if (baseFare != null && baseFare > 0) {
     computedBaseFare = baseFare;

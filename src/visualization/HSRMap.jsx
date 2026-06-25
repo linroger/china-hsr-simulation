@@ -1,14 +1,35 @@
 import { useEffect, useRef, useState } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
+import { withBase } from '../basePath.js';
 
 const PUBLIC_MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || '';
 const MAPBOX_STYLE = import.meta.env.VITE_MAPBOX_STYLE || 'mapbox://styles/mapbox/dark-v11';
 const HAS_VALID_TOKEN = PUBLIC_MAPBOX_TOKEN && PUBLIC_MAPBOX_TOKEN.startsWith('pk.') && !PUBLIC_MAPBOX_TOKEN.includes('replace_with_your');
+// Tokenless fallback basemap: CARTO's free dark vector style needs no API key,
+// so the live demo (and any clone without a Mapbox token) still gets a real map.
+const FALLBACK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+const CJK_FONT = "'PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Heiti SC',sans-serif";
+
+// Load the map engine lazily so ~1.5 MB of GL code is split into its own chunk
+// instead of inflating the initial bundle. Mapbox GL (which requires a token)
+// is used when a public token is configured; otherwise we fall back to the
+// API-compatible MapLibre GL with a free basemap.
+async function loadMapEngine() {
+  if (HAS_VALID_TOKEN) {
+    const mod = await import('mapbox-gl');
+    await import('mapbox-gl/dist/mapbox-gl.css');
+    const mapboxgl = mod.default;
+    mapboxgl.accessToken = PUBLIC_MAPBOX_TOKEN;
+    return { gl: mapboxgl, style: MAPBOX_STYLE, engine: 'mapbox' };
+  }
+  const mod = await import('maplibre-gl');
+  await import('maplibre-gl/dist/maplibre-gl.css');
+  return { gl: mod.default, style: FALLBACK_STYLE, engine: 'maplibre' };
+}
 
 export default function HSRMap({ trains, events }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
+  const glRef = useRef(null);
   const currentTrainsRef = useRef([]);
   const previousTrainsRef = useRef([]);
   const targetTrainsRef = useRef([]);
@@ -20,110 +41,64 @@ export default function HSRMap({ trains, events }) {
   const animateRef = useRef(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
+  const [engineName, setEngineName] = useState('');
 
   useEffect(() => {
-    if (mapRef.current) return undefined;
-    if (!HAS_VALID_TOKEN) {
-      setError('missing-token');
-      return undefined;
-    }
     let map;
-    try {
-      mapboxgl.accessToken = PUBLIC_MAPBOX_TOKEN;
-      map = new mapboxgl.Map({
-        container: containerRef.current,
-        style: MAPBOX_STYLE,
-        center: [104.2, 35.8],
-        zoom: 3.7,
-        minZoom: 3,
-        maxZoom: 12,
-        pitch: 24,
-        attributionControl: false,
+    let cancelled = false;
+    loadMapEngine()
+      .then(({ gl, style, engine }) => {
+        if (cancelled || !containerRef.current) return;
+        glRef.current = gl;
+        setEngineName(engine);
+        try {
+          map = new gl.Map({
+            container: containerRef.current,
+            style,
+            center: [104.2, 35.8],
+            zoom: 3.7,
+            minZoom: 3,
+            maxZoom: 12,
+            pitch: 24,
+            attributionControl: false,
+            // Render Chinese station names with a locally rasterised CJK font so
+            // labels work even when the basemap's glyph server lacks CJK ranges.
+            localIdeographFontFamily: CJK_FONT,
+          });
+        } catch (constructError) {
+          if (!cancelled) setError(constructError?.message || 'Failed to initialise the map.');
+          return;
+        }
+        map.addControl(new gl.NavigationControl({ showCompass: true }), 'bottom-right');
+        map.on('load', async () => {
+          // Draw the rail network + stations from the committed GeoJSON so the
+          // map is self-contained on ANY basemap style (not dependent on a
+          // private custom style baking the layers in).
+          await addNetworkLayers(map);
+          addTrainLayers(map, gl, trains);
+          mapRef.current = map;
+          if (!cancelled) setReady(true);
+        });
+        map.on('error', (event) => {
+          // Before first load, a style/token failure is fatal. After load, a
+          // single failed tile or glyph request must NOT blank the whole map.
+          if (!mapRef.current) {
+            if (!cancelled) setError(event.error?.message || 'The map could not load.');
+          } else if (event?.error?.message) {
+            console.warn('[HSRMap] non-fatal map error:', event.error.message);
+          }
+        });
+      })
+      .catch((engineError) => {
+        if (!cancelled) setError(engineError?.message || 'Map engine failed to load.');
       });
-    } catch (constructError) {
-      setError(constructError?.message || 'Failed to initialise Mapbox.');
-      return undefined;
-    }
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: true }), 'bottom-right');
-    map.on('load', () => {
-      // The Mapbox style (e.g. ChinaHSR custom style) already includes rail
-      // and station layers, so we do NOT add custom GeoJSON sources for them.
-      // Only the dynamic train positions are rendered as a GeoJSON overlay.
-      map.addSource('trains', { type: 'geojson', data: trainGeojson(trains) });
-      map.addLayer({
-        id: 'train-circles',
-        type: 'circle',
-        source: 'trains',
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'load'], 0, 2.3, 1, 5.8],
-          'circle-color': ['interpolate', ['linear'], ['get', 'load'], 0, '#10b981', 0.72, '#f59e0b', 0.95, '#ef4444'],
-          'circle-stroke-width': 0.9,
-          'circle-stroke-color': '#ffffff',
-        },
-      });
-      // Heatmap layer showing passenger density
-      map.addLayer({
-        id: 'corridor-heat',
-        type: 'heatmap',
-        source: 'trains',
-        minzoom: 5,
-        paint: {
-          'heatmap-weight': ['interpolate', ['linear'], ['get', 'pax'], 0, 0, 100, 0.2, 400, 0.8],
-          'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 5, 0.15, 7, 0.5, 9, 1.0],
-          'heatmap-color': [
-            'interpolate', ['linear'], ['heatmap-density'],
-            0, 'rgba(0,0,0,0)',
-            0.1, 'rgba(59,130,246,0.2)',
-            0.3, 'rgba(6,182,212,0.4)',
-            0.6, 'rgba(245,158,11,0.5)',
-            1, 'rgba(239,68,68,0.6)',
-          ],
-          'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 5, 15, 7, 30, 9, 45],
-          'heatmap-opacity': 0.4,
-        },
-      });
-      map.addLayer({
-        id: 'train-labels',
-        type: 'symbol',
-        source: 'trains',
-        minzoom: 5,
-        layout: {
-          'text-field': ['get', 'code'],
-          'text-size': 10,
-          'text-offset': [0, 1.7],
-          'text-anchor': 'top',
-          // Dynamic label visibility based on zoom and load
-          'text-allow-overlap': ['step', ['zoom'], false, 9, true],
-        },
-        paint: {
-          'text-color': '#e0f2fe',
-          'text-halo-color': '#020617',
-          'text-halo-width': 2,
-          'text-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0, 6.5, 0.6, 8, 1],
-        },
-      });
-      function escapeHtml(str) {
-        return String(str)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
-      }
-
-      map.on('click', 'train-circles', (event) => {
-        const feature = event.features?.[0];
-        if (!feature) return;
-        const p = feature.properties;
-        new mapboxgl.Popup({ offset: 18 })
-          .setLngLat(feature.geometry.coordinates)
-          .setHTML(`<div class="popup"><b>${escapeHtml(p.code)}</b><span>${escapeHtml(p.direction)}: ${escapeHtml(p.current)} to ${escapeHtml(p.next)}</span><span>Load ${(Number(p.load) * 100).toFixed(1)}% · ${escapeHtml(p.pax)}/${escapeHtml(p.capacity)}</span></div>`)
-          .addTo(map);
-      });
-      mapRef.current = map;
-      setReady(true);
-    });
-    map.on('error', (event) => setError(event.error?.message || 'Mapbox rendering error.'));
-    return () => map.remove();
+    return () => {
+      cancelled = true;
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+      if (map) map.remove();
+      mapRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -167,24 +142,11 @@ export default function HSRMap({ trains, events }) {
   }, [ready, trains]);
 
   if (error) {
-    const isMissingToken = error === 'missing-token';
     return (
       <div className="map-pane map-pane-fallback">
         <div className="map-token-warning">
-          <h2>{isMissingToken ? 'Mapbox token not configured' : 'Map view unavailable'}</h2>
-          {isMissingToken ? (
-            <>
-              <p>The map view needs a public Mapbox token to render. Configure it before building:</p>
-              <pre>cp .env.example .env
-# then edit .env and set:
-VITE_MAPBOX_TOKEN=pk.your_public_mapbox_token
-VITE_MAPBOX_STYLE=mapbox://styles/mapbox/dark-v11
-npm run build && npm run serve</pre>
-              <p>Get a free public token at <a href="https://account.mapbox.com/access-tokens/" target="_blank" rel="noreferrer">account.mapbox.com</a>.</p>
-            </>
-          ) : (
-            <p>The map could not load: {error}</p>
-          )}
+          <h2>Map view unavailable</h2>
+          <p>The map could not load: {error}</p>
           <p>The Dashboard and Booking views still work without the map — try those tabs. <strong>{(trains || []).length} trains</strong> are running in the simulation right now.</p>
         </div>
         <div className="map-events">
@@ -200,7 +162,7 @@ npm run build && npm run serve</pre>
       <div ref={containerRef} className="mapbox-container" />
       <div className="map-legend">
         <b>Live algorithm map</b>
-        <span><i className="rail" /> Rail network (Mapbox style)</span>
+        <span><i className="rail" /> Rail network{engineName === 'maplibre' ? ' (tokenless basemap)' : ''}</span>
         <span><i className="train-low" /> Low-load train</span>
         <span><i className="train-high" /> High-load train</span>
       </div>
@@ -210,6 +172,144 @@ npm run build && npm run serve</pre>
       </div>
     </div>
   );
+}
+
+async function addNetworkLayers(map) {
+  try {
+    const [rails, stations] = await Promise.all([
+      fetch(withBase('hsr-rails.geojson')).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch(withBase('hsr-stations.geojson')).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    if (!map || !map.getStyle) return;
+    if (rails && !map.getSource('rail-network')) {
+      map.addSource('rail-network', { type: 'geojson', data: rails });
+      map.addLayer({
+        id: 'rail-lines',
+        type: 'line',
+        source: 'rail-network',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': ['case', ['==', ['get', 'hsr'], 1], '#38bdf8', '#64748b'],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.4, 6, 1.3, 10, 3.4],
+          'line-opacity': 0.55,
+        },
+      });
+    }
+    if (stations && !map.getSource('stations')) {
+      map.addSource('stations', { type: 'geojson', data: stations });
+      map.addLayer({
+        id: 'station-dots',
+        type: 'circle',
+        source: 'stations',
+        paint: {
+          'circle-radius': [
+            'match', ['get', 'tier'],
+            'national-hub', ['interpolate', ['linear'], ['zoom'], 3, 2.6, 9, 7],
+            'regional-hub', ['interpolate', ['linear'], ['zoom'], 3, 1.4, 9, 4.5],
+            ['interpolate', ['linear'], ['zoom'], 3, 0.6, 9, 2],
+          ],
+          'circle-color': ['match', ['get', 'tier'], 'national-hub', '#fbbf24', 'regional-hub', '#22d3ee', '#64748b'],
+          'circle-opacity': ['match', ['get', 'tier'], 'national-hub', 0.95, 'regional-hub', 0.8, 0.4],
+          'circle-stroke-width': ['match', ['get', 'tier'], 'national-hub', 0.8, 0],
+          'circle-stroke-color': '#0f172a',
+        },
+      });
+      map.addLayer({
+        id: 'station-labels',
+        type: 'symbol',
+        source: 'stations',
+        minzoom: 5.5,
+        filter: ['==', ['get', 'tier'], 'national-hub'],
+        layout: {
+          'text-field': ['get', 'name'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 5.5, 9, 9, 13],
+          'text-offset': [0, 1.1],
+          'text-anchor': 'top',
+        },
+        paint: {
+          'text-color': '#e2e8f0',
+          'text-halo-color': '#020617',
+          'text-halo-width': 1.4,
+          'text-opacity': ['interpolate', ['linear'], ['zoom'], 5.5, 0, 6.5, 0.9],
+        },
+      });
+    }
+  } catch (networkError) {
+    console.warn('[HSRMap] rail/station layer load failed:', networkError?.message || networkError);
+  }
+}
+
+function addTrainLayers(map, gl, trains) {
+  map.addSource('trains', { type: 'geojson', data: trainGeojson(trains) });
+  map.addLayer({
+    id: 'corridor-heat',
+    type: 'heatmap',
+    source: 'trains',
+    minzoom: 5,
+    paint: {
+      'heatmap-weight': ['interpolate', ['linear'], ['get', 'pax'], 0, 0, 100, 0.2, 400, 0.8],
+      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 5, 0.15, 7, 0.5, 9, 1.0],
+      'heatmap-color': [
+        'interpolate', ['linear'], ['heatmap-density'],
+        0, 'rgba(0,0,0,0)',
+        0.1, 'rgba(59,130,246,0.2)',
+        0.3, 'rgba(6,182,212,0.4)',
+        0.6, 'rgba(245,158,11,0.5)',
+        1, 'rgba(239,68,68,0.6)',
+      ],
+      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 5, 15, 7, 30, 9, 45],
+      'heatmap-opacity': 0.4,
+    },
+  });
+  map.addLayer({
+    id: 'train-circles',
+    type: 'circle',
+    source: 'trains',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['get', 'load'], 0, 2.3, 1, 5.8],
+      'circle-color': ['interpolate', ['linear'], ['get', 'load'], 0, '#10b981', 0.72, '#f59e0b', 0.95, '#ef4444'],
+      'circle-stroke-width': 0.9,
+      'circle-stroke-color': '#ffffff',
+    },
+  });
+  map.addLayer({
+    id: 'train-labels',
+    type: 'symbol',
+    source: 'trains',
+    minzoom: 5,
+    layout: {
+      'text-field': ['get', 'code'],
+      'text-size': 10,
+      'text-offset': [0, 1.7],
+      'text-anchor': 'top',
+      'text-allow-overlap': ['step', ['zoom'], false, 9, true],
+    },
+    paint: {
+      'text-color': '#e0f2fe',
+      'text-halo-color': '#020617',
+      'text-halo-width': 2,
+      'text-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0, 6.5, 0.6, 8, 1],
+    },
+  });
+  map.on('click', 'train-circles', (event) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    const p = feature.properties;
+    new gl.Popup({ offset: 18 })
+      .setLngLat(feature.geometry.coordinates)
+      .setHTML(`<div class="popup"><b>${escapeHtml(p.code)}</b><span>${escapeHtml(p.direction)}: ${escapeHtml(p.current)} to ${escapeHtml(p.next)}</span><span>Load ${(Number(p.load) * 100).toFixed(1)}% · ${escapeHtml(p.pax)}/${escapeHtml(p.capacity)}</span></div>`)
+      .addTo(map);
+  });
+  map.on('mouseenter', 'train-circles', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'train-circles', () => { map.getCanvas().style.cursor = ''; });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function trainGeojson(trains = []) {

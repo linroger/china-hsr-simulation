@@ -183,46 +183,50 @@ export class SeatInventory {
     }
 
     const pool = seatClass ? this.seatsByClass.get(seatClass) || [] : this.seats;
-    const byCarRow = new Map();
-    const byCar = new Map();
-    const fallback = [];
-    for (const seat of pool) {
-      if (!this.isSeatAvailable(seat.id, originIndex, destinationIndex)) continue;
-      fallback.push(seat);
-      const rowKey = `${seat.car}-${seat.row}`;
-      if (!byCarRow.has(rowKey)) byCarRow.set(rowKey, []);
-      byCarRow.get(rowKey).push(seat);
-      if (!byCar.has(seat.car)) byCar.set(seat.car, []);
-      byCar.get(seat.car).push(seat);
+
+    // Fast path (the overwhelming majority of preload/live-demand requests):
+    // a single seat just needs the first available one. Returning here avoids
+    // building any Map or fallback array over all ~554 seats — this is the
+    // dominant cost reduction for the bulk demand preload.
+    if (groupSize === 1) {
+      for (const seat of pool) {
+        if (this.isSeatAvailable(seat.id, originIndex, destinationIndex)) return [seat];
+      }
+      return null;
     }
 
-    if (fallback.length < groupSize) return null;
-    if (groupSize === 1) return [fallback[0]];
-
-    // 1. Prefer a single row that fits the whole group.
-    for (const [, rowSeats] of byCarRow) {
+    // Group path: scan once, and early-return as soon as any single row has
+    // accumulated enough available seats (the preferred same-row allocation),
+    // instead of always scanning the whole pool and building two Maps up front.
+    const byCarRow = new Map();
+    const available = [];
+    for (const seat of pool) {
+      if (!this.isSeatAvailable(seat.id, originIndex, destinationIndex)) continue;
+      available.push(seat);
+      const rowKey = `${seat.car}-${seat.row}`;
+      let rowSeats = byCarRow.get(rowKey);
+      if (!rowSeats) { rowSeats = []; byCarRow.set(rowKey, rowSeats); }
+      rowSeats.push(seat);
+      // 1. Prefer a single row that fits the whole group.
       if (rowSeats.length >= groupSize) return rowSeats.slice(0, groupSize);
     }
 
-    // 2. For large groups, prefer complete rows within a single car.
+    if (available.length < groupSize) return null;
+
+    // 2. No single row fits: keep the group within one car, packing consecutive
+    //    rows, before falling back to scattered seats. Build byCar lazily here.
+    const byCar = new Map();
+    for (const seat of available) {
+      let carSeats = byCar.get(seat.car);
+      if (!carSeats) { carSeats = []; byCar.set(seat.car, carSeats); }
+      carSeats.push(seat);
+    }
     for (const [, carSeats] of byCar) {
-      if (carSeats.length >= groupSize) {
-        const rowsInCar = new Map();
-        for (const seat of carSeats) {
-          const rowKey = `${seat.car}-${seat.row}`;
-          if (!rowsInCar.has(rowKey)) rowsInCar.set(rowKey, []);
-          rowsInCar.get(rowKey).push(seat);
-        }
-        const result = [];
-        for (const [, rowSeats] of rowsInCar) {
-          result.push(...rowSeats);
-          if (result.length >= groupSize) return result.slice(0, groupSize);
-        }
-      }
+      if (carSeats.length >= groupSize) return carSeats.slice(0, groupSize);
     }
 
     // 3. Last resort: scattered seats across cars.
-    return fallback.slice(0, groupSize);
+    return available.slice(0, groupSize);
   }
 
   releaseTicket(ticketId) {

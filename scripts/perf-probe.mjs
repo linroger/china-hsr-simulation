@@ -55,3 +55,24 @@ console.log(`preload: ${fmt(preloadMs)} (${engine.stats.totalPassengers.toLocale
 console.log(`tick    p50=${fmt(percentile(tickDurations, 0.5))} p95=${fmt(percentile(tickDurations, 0.95))} max=${fmt(Math.max(...tickDurations))} over ${tickDurations.length} ticks`);
 console.log(`snapshot p50=${fmt(percentile(snapshotDurations, 0.5))} p95=${fmt(percentile(snapshotDurations, 0.95))} max=${fmt(Math.max(...snapshotDurations))} over ${snapshotDurations.length} snapshots`);
 console.log(`stats: active=${engine.snapshot().stats.activeTrains} revenue=¥${Math.round(engine.stats.totalRevenue).toLocaleString()} scenarios=${engine.activeScenarios.length}`);
+
+// Coarse regression gates. Thresholds are deliberately generous (2-4x the
+// healthy baseline on a 2024 laptop) so they don't flake on slower CI hardware,
+// but still catch order-of-magnitude regressions: the per-route service floor
+// over-allocating trains to OOM (was 10,800), or the demand preload returning to
+// its ~144s pre-optimization cost. p95 (not max) is used so a one-off GC pause
+// can't fail the gate.
+const tickP95 = percentile(tickDurations, 0.95);
+const snapshotP95 = percentile(snapshotDurations, 0.95);
+const checks = [
+  ['train count within daily budget', engine.trains.length <= 6200, `${engine.trains.length} trains`],
+  ['preload under 120s', preloadMs < 120_000, fmt(preloadMs)],
+  ['tick p95 under 250ms', tickP95 < 250, fmt(tickP95)],
+  ['snapshot p95 under 400ms', snapshotP95 < 400, fmt(snapshotP95)],
+];
+let failed = false;
+for (const [name, ok, actual] of checks) {
+  if (!ok) { console.error(`PERF REGRESSION: ${name} (got ${actual})`); failed = true; }
+}
+if (failed) process.exitCode = 1;
+else console.log('perf gates: PASS');

@@ -404,7 +404,13 @@ export class SimulationEngine {
     this.trains = [...retained, ...newTrains];
     this.trainById = new Map(this.trains.map((train) => [train.id, train]));
     this.bookingOptions = this.createBookingOptions();
-    this.preloadCursor = 0;
+    this.bookingOptionsDirty = false;
+    // Retained trains were fully preloaded on their original creation day and
+    // already carry their demand. They sit at the FRONT of this.trains, so start
+    // the background preload cursor past them — resetting to 0 re-ran the
+    // non-idempotent preloadTrainDemand on every retained service, stacking a
+    // second wave of synthetic bookings and inflating revenue/passengers/loads.
+    this.preloadCursor = retained.length;
     const routeServiceStats = summarizeRouteServices(newTrains, this.routes);
     this.stats.trainCount = newTrains.length;
     this.stats.currentServiceDayIndex = this.currentServiceDayIndex;
@@ -708,8 +714,6 @@ export class SimulationEngine {
       this.stats.rejectedBookings += 1;
       return { ok: false, reason: 'Train schedule changed. Please retry your booking.', quote };
     }
-    const currentVelocity = this.bookingVelocity.get(train.routeId) || 0;
-    this.bookingVelocity.set(train.routeId, currentVelocity + groupSize);
     if (!quote.canBook) {
       this.stats.rejectedBookings += 1;
       return { ok: false, reason: 'No seats available for the requested interval.', quote };
@@ -731,6 +735,9 @@ export class SimulationEngine {
       this.stats.rejectedBookings += 1;
       return { ok: false, reason: 'Allocation failed after quote because the seat calendar changed.', quote };
     }
+    // Booking velocity drives pricing pressure; count only confirmed sales so
+    // sold-out rejections can't push prices up on phantom demand.
+    this.bookingVelocity.set(train.routeId, (this.bookingVelocity.get(train.routeId) || 0) + groupSize);
     const booking = {
       ticketId,
       passengerId,
@@ -751,6 +758,10 @@ export class SimulationEngine {
     };
     train.bookings.push(booking);
     if (train.bookings.length > 1500) {
+      // Release the seat intervals held by the bookings we are about to drop so
+      // they don't linger as phantom inventory that never boards/alights.
+      const dropped = train.bookings.slice(0, train.bookings.length - 1500);
+      for (const old of dropped) train.inventory.releaseTicket(old.ticketId);
       train.bookings = train.bookings.slice(-1500);
       train._bookingIndexes = null; // invalidated by cap
     } else if (train._bookingIndexes) {
@@ -831,6 +842,11 @@ export class SimulationEngine {
     this.stats.cancelledBookings = (this.stats.cancelledBookings || 0) + 1;
     // 12306 refunds retain a handling fee (5-20% by notice period); model 10%.
     this.stats.totalRevenue = Math.max(0, this.stats.totalRevenue - booking.price * 0.9);
+    // Reverse the passenger/booking counters this ticket added at bookTrip time,
+    // so a cancellation removes its seats from the totals (not just its revenue).
+    const cancelledSeats = booking.seats?.length || 1;
+    this.stats.totalPassengers = Math.max(0, this.stats.totalPassengers - cancelledSeats);
+    this.stats.totalBookings = Math.max(0, this.stats.totalBookings - 1);
     booking.status = 'cancelled';
     this.recordLedgerEntry(booking, train);
     this.logEvent('release', `${booking.trainCode} released ${booking.seats.length} seat(s) after cancellation or alighting logic.`);
@@ -844,7 +860,10 @@ export class SimulationEngine {
   }
 
   logEvent(type, message) {
-    const id = `${Date.now()}-${(this.eventCounter = (this.eventCounter || 0) + 1)}`;
+    // Monotonic counter keeps event ids unique AND seed-reproducible; Date.now()
+    // made replays of the same seed produce different ids.
+    this.eventCounter = (this.eventCounter || 0) + 1;
+    const id = `evt-${this.eventCounter}`;
     this.events.unshift({ id, type, message, minute: Math.round(this.nowMinutes) });
     // Truncate in place (amortized) instead of cloning an 80-element array on
     // every event — station stops alone produce ~85k events per simulated day.
@@ -880,13 +899,20 @@ export class SimulationEngine {
 
     let bookingOptions;
     if (includeBookingOptions || this.bookingOptionsDirty) {
-      this.bookingOptions = this.createBookingOptions();
-      this.bookingOptionsDirty = false;
+      // Rebuild the (potentially thousands-of-trains) option list only when it
+      // is actually stale. Bookings don't change the option set, so a plain
+      // 'booking'/'manual' full snapshot can reuse the cached array — rebuilding
+      // it per full snapshot was the dominant cost behind the snapshot spikes.
+      if (this.bookingOptionsDirty || !this.bookingOptions) {
+        this.bookingOptions = this.createBookingOptions();
+        this.bookingOptionsDirty = false;
+      }
       bookingOptions = this.bookingOptions;
     }
 
-    // Cache network summary: only recompute every 5 snapshots since it changes slowly
-    if (!this._networkCacheTick || this.tickCounter - this._networkCacheTick >= 5) {
+    // Cache network summary: corridor/province/station aggregates change slowly,
+    // so recomputing over all ~6,000 trains only every 12 snapshots is plenty.
+    if (!this._networkCacheTick || this.tickCounter - this._networkCacheTick >= 12) {
       this._networkCache = networkSummaryFromTrains(this.trains, this.nowMinutes);
       this._networkCacheTick = this.tickCounter;
     }

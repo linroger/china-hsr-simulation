@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Mapbox](https://img.shields.io/badge/Mapbox%20GL-3.x-000000?logo=mapbox&logoColor=white)](https://docs.mapbox.com/mapbox-gl-js/)
-[![Tests](https://img.shields.io/badge/tests-25%2F25%20passing-brightgreen)](#11-测试策略)
+[![Tests](https://img.shields.io/badge/tests-32%2F32%20passing-brightgreen)](#11-测试策略)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 🇺🇸 **[English README](./README.md)**
@@ -18,7 +18,7 @@
 | 实时网络地图 | 运营仪表盘 | 区间感知订票 |
 |:---:|:---:|:---:|
 | ![实时地图](./screenshots/01-live-map.png) | ![仪表盘](./screenshots/02-operations-dashboard.png) | ![订票](./screenshots/03-booking-panel.png) |
-| 6,000 列滚动服务日明细车次沿 OSM 真实铁路走廊折线移动,按上座率着色。 | 实时指标叠加 OceanBase 年度总量:547 万列车、25.7 亿客流、¥9,150 亿营收。 | 可对任意车次任意区段询价订票;乘客下车后座位即可被复用。 |
+| 6,000 列滚动服务日明细车次沿 OSM 真实铁路走廊折线移动,按上座率着色。 | 实时指标叠加 OceanBase 年度总量:825 万列车、38.7 亿客流、¥1.49 万亿营收。 | 可对任意车次任意区段询价订票;乘客下车后座位即可被复用。 |
 
 **[▶ 观看最新完整演示视频](./screenshots/ChinaHSRSimulation.mp4)** — 完整端到端演示:实时地图、订票面板、OceanBase 仪表盘,以及新的铁路图 A\* 路径追踪几何。([60 秒精简版](./screenshots/04-simulation.mp4)同样可用。)
 
@@ -64,12 +64,12 @@
 
 - **在线区间调度问题** —— 经典的"乘客下车后,这个座位能否再卖给下游乘客?"问题,以**区间重叠日历**形式建模,O(k) 检测、O(k log k) 插入、并通过确定性回归测试覆盖。
 - **收益管理 / 收益最大化** —— 多因子动态定价综合**距离里程基价**、**Sigmoid 稀缺度投标价**、**时间紧迫度**、**高峰加价**、**频次缓解**、**失约缓冲**与**价格弹性**等维度。
-- **离散事件仿真 (DES)** —— 20 Hz 时钟循环驱动 6,000 列滚动服务日明细车次跨越 1,200 条线路,内置**计划-实际延误模型**、**失约座位释放**、**车站站台压力指标**,并可随 365 天日历滚动换日。
-- **增量快照协议** —— Web Worker 每 100 ms 仅发送状态发生变化的列车(约减少 56% 流量),UI 侧使用 `Object.create(null)` 字典合并增量状态,绕开 esbuild 代码压缩器的变量名冲突。
-- **OceanBase 年度持久化** —— Python 多进程 ETL 生成全年 438,000 条线路-日期服务事实,通过 OceanBase 的 MySQL 兼容接口批量写入本机 OceanBase Desktop;同时支持实时订票流水 NDJSON 流式入库。
+- **离散事件仿真 (DES)** —— 20 Hz 时钟循环驱动 6,000 列滚动服务日明细车次跨越 1,800 条线路,内置**计划-实际延误模型**、**失约座位释放**、**车站站台压力指标**,并可随 365 天日历滚动换日。
+- **增量快照协议** —— Web Worker 每 200 ms 仅发送状态发生变化的列车(约减少 56% 流量),UI 侧使用 `Object.create(null)` 字典合并增量状态,绕开 esbuild 代码压缩器的变量名冲突。
+- **OceanBase 年度持久化** —— Python 多进程 ETL 生成全年 657,000 条线路-日期服务事实,通过 OceanBase 的 MySQL 兼容接口批量写入本机 OceanBase Desktop;同时支持实时订票流水 NDJSON 流式入库。
 - **空间算法** —— Haversine 大圆距离、垂直距离剪枝、按弧长参数化的折线插值、自研**0.35°×0.35° 网格哈希索引**,把生成的线路区段贴合到真实 OSM 铁路走廊上。
 - **浏览器多线程** —— 整个仿真引擎从 React/Mapbox UI 主线程**剥离至 Web Worker**;UI 与引擎之间通过强类型、Promise 化的消息总线交换 `init`、`start`、`setSpeed`、`quoteTrip`、`bookTrip`、`snapshot` 等指令。
-- **工程严谨性** —— 确定性种子伪随机数 (FNV-1a)、25 项回归测试覆盖订票语义、定价单调性、失约释放、动态需求、换日滚动、列车单调推进、终点折返、无直连捷径线路几何、OceanBase 线路契约、数据多样性、订票流水导入、退票流水、12306 迁移 dry-run、OceanBase 铁路路径几何与动态定价单调性,外加 `./run.sh` 一键脚本完成依赖安装、数据生成、测试、构建、上线全流程。
+- **工程严谨性** —— 确定性种子伪随机数 (FNV-1a)、32 项回归测试覆盖订票语义、定价单调性、失约释放、动态需求、换日滚动、列车单调推进、终点折返、无直连捷径线路几何、OceanBase 线路契约、数据多样性、订票流水导入、退票流水、12306 迁移 dry-run、OceanBase 铁路路径几何、动态定价单调性,以及场景/真实性校验(中断减速、需求激增、确定性自动扰动、逐时需求形状、退票核算、延误级联传播),外加 `./run.sh` 一键脚本完成依赖安装、数据生成、测试、构建、上线全流程。
 
 > **面向蚂蚁集团、阿里巴巴、腾讯、百度、华为等公司的招聘官与工程师** —— 项目刻意保持精简(手写核心逻辑约 3,500 行 JS + Python),却同时覆盖了**算法、分布式系统思维、运筹优化/收益管理、全栈 React 工程、地理信息系统(GIS)与端到端产品故事**。
 
@@ -130,23 +130,23 @@ npm run serve          # http://127.0.0.1:5174/
 |---|---|
 | **车站索引规模** | 3,147 个(CSV 3,058 + OSM 补充 89 个缺失高铁枢纽,如西安北/昆明南/南宁东/香港西九龙) |
 | **高铁服务记录** | 7,278 条 G/D/C 真实始发/终到记录;经 OSM 补充后,**96.3%** 端点可解析 |
-| **生成仿真线路** | 1,200 条,覆盖 28 个宏观走廊、30 个起点省份与 224 个起点车站 |
+| **生成仿真线路** | 1,800 条,覆盖 28 个宏观走廊、30 个起点省份与 224 个起点车站 |
 | **滚动服务日明细车次** | 当前浏览器服务日 6,000 列 |
-| **OceanBase 年度车次** | 5,469,688 列,365 天累计不封顶 |
-| **OceanBase 年度客流 / 营收** | 2,573,835,026 人次 / ¥915,093,470,567 |
-| **OceanBase 年度线路-日期事实** | 438,000 行(365 天 × 1,200 条线路) |
+| **OceanBase 年度车次** | 8,245,069 列,365 天累计不封顶 |
+| **OceanBase 年度客流 / 营收** | 3,872,435,693 人次 / ¥1,493,000,206,022 |
+| **OceanBase 年度线路-日期事实** | 657,000 行(365 天 × 1,800 条线路) |
 | **每列车座位定员** | 554 席(8 节编组:商务座 10 + 一等座 204 + 二等座 340) |
 | **滚动服务日明细座位日历** | 约 332 万个座位日历对象 |
 | **OSM 铁路渲染特征数** | 简化后 12,000 条 LineString |
 | **OSM 铁路图(用于路径追踪)** | 254,501 节点 / 275,919 边,基于 347,132 条原始铁路要素构建 |
-| **铁路图追踪区段(rail-traced)** | **82.8%** 通过 A\* 算法在铁路图上路径追踪生成 |
+| **铁路图追踪区段(rail-traced)** | **83.7%** 通过 A\* 算法在铁路图上路径追踪生成 |
 | **铁路匹配总体** | **100.0%**(rail-traced + 走廊采样),0 条长距离直线退化段 |
 | **几何连续性** | 231,757 个坐标转换中 0 条长距离直连捷径,6,138 个段间边界全部连续 |
-| **快照推送频率** | 100 ms (10 Hz),从 Worker → UI |
+| **快照推送频率** | 200 ms (5 Hz),从 Worker → UI |
 | **仿真 Tick 频率** | 20 Hz (50 ms),Worker 内部 |
 | **最大仿真倍速** | 480×(24 小时约 3 分钟跑完) |
 | **默认仿真倍速** | 120×(24 小时约 12 分钟跑完) |
-| **测试通过率** | 25/25 |
+| **测试通过率** | 32/32 |
 
 ---
 
@@ -179,7 +179,7 @@ npm run serve          # http://127.0.0.1:5174/
 │  │   ├─ SeatInventory[trainId]  ←─ 每列车一份区间日历          │          │
 │  │   └─ priceQuote / reconcileDemandForecast                   │          │
 │  │                                                             │          │
-│  │  快照每 100 ms 推送一次 ───► 主线程 setData()                │          │
+│  │  快照每 200 ms 推送一次 ───► 主线程 setData()                │          │
 │  │  (增量模式:仅发送变化列车)                                   │          │
 │  └─────────────────────────────────────────────────────────────┘          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -189,7 +189,7 @@ npm run serve          # http://127.0.0.1:5174/
                                                   route, stations, rails}
 ```
 
-整体架构是一个**带背压的生产者-消费者管道**:Worker 以 10 Hz 速率产出快照,UI 始终消费**最新一帧**,丢弃过期帧。所有写操作(订票)走请求-响应配对,UI 永远不会读到部分状态。仿真 Tick 在 Worker 内以 20 Hz 运行,与快照发布速率解耦。
+整体架构是一个**带背压的生产者-消费者管道**:Worker 以 5 Hz 速率产出快照,UI 始终消费**最新一帧**,丢弃过期帧。所有写操作(订票)走请求-响应配对,UI 永远不会读到部分状态。仿真 Tick 在 Worker 内以 20 Hz 运行,与快照发布速率解耦。
 
 ---
 
@@ -316,20 +316,20 @@ bidPrice@93%   >  bidPrice@15%
 
 ### 5.3 离散事件仿真内核
 
-`SimulationEngine`(`src/simulation_core/SimulationEngine.js`)是一份手写的约 1,300 行离散事件仿真运行时。主要职责:
+`SimulationEngine`(`src/simulation_core/SimulationEngine.js`)是一份手写的约 1,650 行离散事件仿真运行时。主要职责:
 
 | 方法 | 功能 |
 |---|---|
-| `createScheduledServices(routes, maxTrains)` | 从 1,200 条持久化线路契约生成滚动服务日列车计划。使用 `allocateDailyServices` 按比例缩放期望服务次数,同时保证每线路至少 2 列。 |
+| `createScheduledServices(routes, maxTrains)` | 从 1,800 条持久化线路契约生成滚动服务日列车计划。使用 `allocateDailyServices` 按比例缩放期望服务次数,同时保证每线路至少 2 列。 |
 | `tick(realSeconds)` | 推进 `nowMinutes`,更新所有列车,每 6 个 tick 触发一次实时需求售票,每分钟衰减订票速度,处理日历/日期边界转换。 |
 | `updateTrain(train)` | 累加 `segmentMinutes[]`,推进区段索引;列车到达终点后进入折返停站,随后按同一站序的反向线路返回,最终回到始发站才完成。用 epsilon 容差(1e-4)防止倒退。 |
 | `processStation(train, idx)` | 处理上车/下车/失约逻辑,原地变更订票状态。使用惰性构建的 `_bookingIndexes`(byOrigin/byDestination Map)实现 O(1) 站点查询。 |
 | `quoteTrip(...)` | 纯只读价格计算,内置 `performance.now()` 计时,把 `algorithmMs` 暴露到 UI。 |
 | `bookTrip(...)` | 通过 `quoteTrip + inventory.allocate` 串行化读-改-写;若询价与提交之间座位日历改变,则回滚(SE-3 守卫)。记录流水条目用于持久化。 |
-| `snapshot()` | 构建 1,500 列上限的 `{ 在途 ∪ 临近发车 ∪ 刚到达 }` 快照,附带订票选项、网络汇总、统计数据。缓存日历、订票、事件与序列化停靠站以避免重复计算。 |
+| `snapshot()` | 构建 800 列上限的 `{ 在途 ∪ 临近发车 ∪ 刚到达 }` 快照,附带订票选项、网络汇总、统计数据。缓存日历、订票、事件与序列化停靠站以避免重复计算。 |
 | `cancelBooking(ticketId)` | 释放座位库存,过滤订票数组,记录退票流水条目。 |
 
-Worker 内 tick 频率为 **20 Hz**(50 ms),采用自校正间隔测量实际流逝时间以防止回调堆积。向 UI 推快照为每 **100 ms** 一次 (10 Hz) —— 这种**生产/消费速率解耦**让 Mapbox `setData` 调用始终落在 React 60 fps 预算内,同时确保列车以精确仿真速度移动。
+Worker 内 tick 频率为 **20 Hz**(50 ms),采用自校正间隔测量实际流逝时间以防止回调堆积。向 UI 推快照为每 **200 ms** 一次 (5 Hz) —— 这种**生产/消费速率解耦**让 Mapbox `setData` 调用始终落在 React 60 fps 预算内,同时确保列车以精确仿真速度移动。
 
 #### 状态机
 
@@ -428,8 +428,8 @@ function dijkstraPath(network, startId, goalId, directKm) {
 
 | 几何来源 | 占比 |
 |---|---:|
-| `rail-traced`(铁路图 A\* 追踪) | **82.8%** |
-| `hotosm-rail-corridor`(走廊采样) | 17.2% |
+| `rail-traced`(铁路图 A\* 追踪) | **83.7%** |
+| `hotosm-rail-corridor`(走廊采样) | 16.3% |
 | `station-straight-fallback`(直线弦) | 0.0% |
 
 最终效果:跨越 231,757 个坐标转换、6,138 个段间边界,**0 条长距离直连捷径、0 处段间不连续**。
@@ -486,7 +486,7 @@ function selectDiverseRecords(records, limit) {
 - 唯一始发站 ≥ 70 个
 - 唯一始发省份 ≥ 24 个(中国共 31 个省级行政区)
 - 唯一宏观走廊 ≥ 20 个(按 `华北/华南/华东/华中/西南/西北/东北` 七大区域分类)
-- 铁路匹配区段 ≥ 50%
+- 铁路匹配区段 ≥ 85%
 - 铁路图追踪区段 ≥ 50%
 
 ### 5.6 运营真实性建模
@@ -560,7 +560,7 @@ targetLoad = min(0.96, 0.58 + demandIntensity × 0.16 + (calendarDemand - 1) × 
 
 ### 5.9 增量快照协议
 
-每 100 ms 发送完整的 1,500 列车快照会浪费带宽与 CPU。Worker 实现了**增量快照**协议:
+每 200 ms 发送完整的 800 列车快照会浪费带宽与 CPU。Worker 实现了**增量快照**协议:
 
 ```
 完整快照  ──► 在 init、订票、手动刷新或日期边界时发送
@@ -616,10 +616,10 @@ function mergeSnapshot(previous, nextSnapshot) {
 | 痛点 | 优化手段 |
 |---|---|
 | **UI 主线程饥饿** | 整个仿真迁移到 Web Worker(`simulationWorker.js`),React 只负责渲染和交互。 |
-| **Mapbox setData 抖动** | 快照 10 Hz 增量模式(仅发送变化列车);列车 GeoJSON 上限 1,500 个特征(在途 ∪ 临近 ∪ 刚到达);完成的列车从特征集合中剔除。 |
+| **Mapbox setData 抖动** | 快照 5 Hz 增量模式(仅发送变化列车);列车 GeoJSON 上限 800 个特征(在途 ∪ 临近 ∪ 刚到达);完成的列车从特征集合中剔除。 |
 | **Mapbox 样式复用** | 单实例 `mapbox-gl`,图层在 `'load'` 时一次加入,列车 source 通过 `getSource('trains').setData(...)` 增量更新,绝无整图重渲染。 |
 | **快照序列化** | `snapshot()` 只挑出 UI 所需字段;增量快照仅发送变化列车(200 列车负载下约减少 56%);缓存序列化停靠站、日历、订票与事件数组避免重复计算。 |
-| **OSM 数据负载** | 硬上限 8,000 个特征、82 万顶点;每条 LineString 自适应步长抽稀,确保 geojson 总体积 < 2.5 MB。 |
+| **OSM 数据负载** | 硬上限 12,000 个特征、140 万顶点;每条 LineString 自适应步长抽稀。 |
 | **CSV 解析** | 单遍流式、引号感知切分,无正则回溯。 |
 | **空间查询** | 0.35° 网格哈希(§5.4)把空间命中检索由 O(特征) 线性扫描降至**亚毫秒级**。 |
 | **询价时延** | UI 中暴露 `algorithmMs`,在 2024 款 MacBook 上典型为 **0.1–1 ms** 一次。 |
@@ -647,8 +647,8 @@ new SimulationWorkerClient({ onSnapshot })
    │ ◄────postMessage({type:'response', id:1, ...})───
    │
    │ ──postMessage({id:2, type:'start'})───────────►   engine.start()
-   │                                                    setInterval(()=>postSnapshot(),100)
-   │ ◄────postMessage({type:'snapshot'})······ 每 100 ms
+   │                                                    setInterval(()=>postSnapshot(),200)
+   │ ◄────postMessage({type:'snapshot'})······ 每 200 ms
    │
    │ ──postMessage({id:3, type:'quoteTrip',...})──►    respond(engine.quoteTrip(...))
    │ ◄────postMessage({type:'response', id:3,...})
@@ -666,13 +666,13 @@ new SimulationWorkerClient({ onSnapshot })
 
 ## 数据管道
 
-`scripts/prepare-data.cjs` 是一份 484 行的 ETL 流水线,产出 `public/` 下四个数据文件:
+`scripts/prepare-data.cjs` 是一份约 1,540 行的 ETL 流水线,产出 `public/` 下四个数据文件:
 
 1. **`station-data.json`** —— 3,147 个车站,字段 `{id, name, address, bureau, kind, province, city, lng, lat, sourceCount, tier}`。等级判定:
    - `national-hub`:站名匹配 `北京|上海|广州|深圳|成都|重庆|武汉|郑州|西安|南京|杭州|长沙|天津|昆明|南宁|福州|厦门|哈尔滨|沈阳|大连|长春|济南|青岛|合肥|南昌|贵阳|乌鲁木齐|呼和浩特|银川|西宁|兰州|太原|石家庄|香港西九龙` 及它们的方位子站
    - `regional-hub`:`sourceCount ≥ 4` 或站名末尾含 `南/西/东/北` 方位词
    - `local`:其他
-2. **`route-data.json`** —— 1,200 条仿真线路,含完整区段几何与显式 `routeContract` 去程/返程线路契约;同时保留 7,278 条原始记录以追溯出处。
+2. **`route-data.json`** —— 1,800 条仿真线路,含完整区段几何与显式 `routeContract` 去程/返程线路契约;同时保留 7,278 条原始记录以追溯出处。
 3. **`hsr-stations.geojson`** —— Mapbox 即用的车站点要素。
 4. **`hsr-rails.geojson`** —— Mapbox 即用的铁路线要素(≤ 12,000、≤ 140 万顶点)。
 
@@ -720,7 +720,7 @@ new SimulationWorkerClient({ onSnapshot })
 | 模式 | 精度 | 规模 | 运行时 |
 |---|---|---|---|
 | **浏览器明细模式** | 座位级区间日历 | 1 个滚动服务日(~6 K 列车、~3.3 M 座位) | Web Worker @ 20 Hz |
-| **OceanBase 年度模式** | 线路-日期聚合事实 | 365 天(~547 万列车、43.8 万条线路-日期行) | Python 多进程 + 批量 INSERT |
+| **OceanBase 年度模式** | 线路-日期聚合事实 | 365 天(~825 万列车、65.7 万条线路-日期行) | Python 多进程 + 批量 INSERT |
 
 ### Schema 设计
 
@@ -763,7 +763,7 @@ calendar_summary
 
 ### 9.1 静态服务器架构
 
-`scripts/serve-static.cjs` 是一份约 370 行的零依赖 Node.js 服务器,既提供 Vite 生产包**也**充当轻量级 API 后端。默认运行在 `http://127.0.0.1:5174/`。
+`scripts/serve-static.cjs` 是一份约 450 行的零依赖 Node.js 服务器,既提供 Vite 生产包**也**充当轻量级 API 后端。默认运行在 `http://127.0.0.1:5174/`。
 
 **静态文件服务:**
 - 从 `dist/` 提供文件,附带正确的 MIME 类型
@@ -880,14 +880,14 @@ orb -m oceanbase-desktop -u root bash -lc '
 在 16 核 MacBook Pro 上,全年数据生成 + 入库仅需 **~2 秒**(每完成 10% 打印一次进度):
 
 ```
-[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1200 workers=12 chunk_days=8
+[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1800 workers=12 chunk_days=8
 [oceanbase:seed] connecting to OceanBase at 127.0.0.1:2881
-[oceanbase:seed] loading dimension tables: 3,147 stations, 1,200 routes
+[oceanbase:seed] loading dimension tables: 3,147 stations, 1,800 routes
 [oceanbase:seed]   progress: 5/46 chunks (11%)
 ...
 [oceanbase:seed]   progress: 46/46 chunks (100%)
-[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1200 route_day_rows=438000
-                 trains=5469688 passengers=2573835026 revenue=915093470567.65
+[oceanbase:seed] run=yearly-20260503T093240Z days=365 routes=1800 route_day_rows=657000
+                 trains=8245069 passengers=3872435693 revenue=1493000206022.65
                  workers=12 db=loaded
 ```
 
@@ -964,7 +964,7 @@ KEY idx_bookings_status     (status)
 KEY idx_bookings_run        (run_id)
 ```
 
-复合索引 `(route_id, service_date)` 对最常见的分析师问题——*"该线路在某日期区间的表现如何?"*——至关重要,使 OceanBase 在 438,000 行事实表中也能以个位数毫秒返回单条线路的月度时间线。
+复合索引 `(route_id, service_date)` 对最常见的分析师问题——*"该线路在某日期区间的表现如何?"*——至关重要,使 OceanBase 在 657,000 行事实表中也能以个位数毫秒返回单条线路的月度时间线。
 
 ### 幂等性、原子性与重跑
 
@@ -1071,8 +1071,8 @@ curl -s http://127.0.0.1:5174/ingest-bookings \
 |---|---:|---:|---:|
 | `chinahsr` schema 引导(14 条 `CREATE TABLE`) | — | < 100 ms | — |
 | 维度/线路契约加载(`stations`+线路/站序/几何变体+`rail_tracks`) | ~72 K | ~1.5 s | ~48 K 行/秒 |
-| 全年事实表生成(Python 多进程) | 438 K | ~1.6 s | ~270 K 行/秒 |
-| 全年事实表写入(PyMySQL `executemany`,batch 4 K) | 438 K | ~7 s | ~62 K 行/秒 |
+| 全年事实表生成(Python 多进程) | 657 K | ~1.6 s | ~270 K 行/秒 |
+| 全年事实表写入(PyMySQL `executemany`,batch 4 K) | 657 K | ~7 s | ~62 K 行/秒 |
 | `calendar_summary` upsert | 365 | ~70 ms | ~5 K 行/秒 |
 | 走廊 Top-10 查询 | 全年扫描 | ~12 ms | — |
 | 单线路月度时间线(命中覆盖索引) | ~30 行 | < 2 ms | — |
@@ -1152,6 +1152,10 @@ tests/
 ├── dataDiversity.test.mjs    ← ≥1000 线路、≥70 起点、≥24 省份、
 │                                ≥20 走廊、≥85% 铁路匹配区段、
 │                                ≥50% 铁路图追踪、西安覆盖回归
+├── scenarios.test.mjs        ← 中断一次性减速 + 过期、
+│                                需求激增抬升 + 过期、
+│                                确定性自动扰动、逐时需求形状、
+│                                退票核算、延误级联传播
 ├── geometryValidation.test.mjs
 │                              ← 段间连续性(0 处边界断裂)、
 │                                端点锚定、无长距离直连捷径、
@@ -1207,8 +1211,8 @@ npm test
 ✔ OceanBase annual generator produces uncapped route-day summary without database credentials
 ✔ dynamic pricing orders seat classes and rises with scarcity
 ✔ same seat is reusable after passenger alights but blocked for overlapping intervals
-ℹ tests 25
-ℹ pass  25
+ℹ tests 32
+ℹ pass  32
 ℹ fail  0
 ```
 
@@ -1232,7 +1236,7 @@ ChinaHSR_Simulation/
 ├── .env.example                       ← 密钥模板(不提交到 git)
 ├── public/                            ← 已提交的预生成数据
 │   ├── station-data.json   (3,147 个车站)
-│   ├── route-data.json     (1,200 条线路 + 7,278 条记录)
+│   ├── route-data.json     (1,800 条线路 + 7,278 条记录)
 │   ├── oceanbase-yearly-summary.json
 │   ├── oceanbase-simulation-data.json
 │   ├── hsr-stations.geojson
@@ -1260,11 +1264,12 @@ ChinaHSR_Simulation/
 │   │   ├── Dashboard.jsx
 │   │   └── BookingPanel.jsx
 │   └── styles/app.css
-├── tests/                             ← 确定性回归测试(25 项)
+├── tests/                             ← 确定性回归测试(32 项)
 │   ├── seatInventory.test.mjs
 │   ├── pricing.test.mjs
 │   ├── engine.test.mjs
 │   ├── dataDiversity.test.mjs
+│   ├── scenarios.test.mjs
 │   ├── geometryValidation.test.mjs
 │   ├── bookingLedger.test.mjs
 │   ├── oceanbaseRouteGeometry.test.mjs

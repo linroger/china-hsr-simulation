@@ -21,6 +21,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "lucide-react": "^1.14.0",
     "mapbox-gl": "^3.23.0",
+    "maplibre-gl": "^5.24.0",
     "papaparse": "^5.5.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
@@ -28,7 +29,6 @@
     "seedrandom": "^3.0.5",
     "vite": "^8.0.10"
   },
-  "devDependencies": {},
   "engines": {
     "node": ">=18.0.0"
   }
